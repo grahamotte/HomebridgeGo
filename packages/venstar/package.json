@@ -6,13 +6,13 @@
   "description": "A Homebridge plugin for Venstar thermostats",
   "author": "Graham Otte",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/grahamotte/homebridge-go-venstar",
+  "homepage": "https://github.com/grahamotte/HomebridgeGoVenstar",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/grahamotte/homebridge-go-venstar.git"
+    "url": "git+ssh://git@github.com/grahamotte/HomebridgeGoVenstar.git"
   },
   "bugs": {
-    "url": "https://github.com/grahamotte/homebridge-go-venstar/issues"
+    "url": "https://github.com/grahamotte/HomebridgeGoVenstar/issues"
   },
   "keywords": [
     "homebridge-plugin"
