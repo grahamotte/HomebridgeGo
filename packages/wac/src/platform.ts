@@ -7,10 +7,9 @@ import type {
   PlatformConfig,
   Service
 } from "homebridge";
-import { normalizeHost, parseConfig, type GoWacFansConfig } from "./config.js";
 import { discoverFans, type DiscoveredFan } from "./discovery.js";
 import { WacFanAccessory } from "./accessory.js";
-import { PLATFORM_NAME, PLUGIN_NAME } from "./settings.js";
+import { DISCOVERY_INTERVAL_MS, PLATFORM_NAME, PLUGIN_NAME, SCAN_TIMEOUT_MS } from "./settings.js";
 
 interface CachedDevice extends DiscoveredFan {
   readonly lastSeen: string;
@@ -25,7 +24,6 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
   public readonly accessories = new Map<string, PlatformAccessory>();
-  public readonly settings: GoWacFansConfig;
   private readonly controllers = new Map<string, WacFanAccessory>();
   private discoveryRunning = false;
   private discoveryReported = false;
@@ -38,7 +36,6 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
-    this.settings = parseConfig(config);
 
     api.on("didFinishLaunching", () => {
       this.discoverDevices().catch((error: unknown) => {
@@ -66,11 +63,7 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
       const cachedHosts = [...this.accessories.values()]
         .map((accessory) => (accessory.context as Context).device?.host)
         .filter((host): host is string => Boolean(host));
-      const fans = await discoverFans(
-        [...this.settings.hosts, ...cachedHosts].map(normalizeHost),
-        this.settings.scanTimeoutMs,
-        this.settings.discover,
-      );
+      const fans = await this.findFans(cachedHosts);
 
       const changed = this.sync(fans, initialDiscovery);
       this.logDiscovery(`WAC discovery finished: ${fans.length} fan(s) available.`, initialDiscovery || changed);
@@ -80,8 +73,12 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  findFans(cachedHosts: readonly string[]): Promise<DiscoveredFan[]> {
+    return discoverFans(cachedHosts, SCAN_TIMEOUT_MS, true);
+  }
+
   private startDiscoveryTimer(): void {
-    if (this.settings.discoveryIntervalMs === 0 || this.discoveryTimer) {
+    if (this.discoveryTimer) {
       return;
     }
 
@@ -89,7 +86,7 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
       this.discoverDevices().catch((error: unknown) => {
         this.log.error(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`);
       });
-    }, this.settings.discoveryIntervalMs);
+    }, DISCOVERY_INTERVAL_MS);
 
     this.discoveryTimer.unref?.();
   }
@@ -134,28 +131,19 @@ export class GoWacFansPlatform implements DynamicPlatformPlugin {
         continue;
       }
 
-      if (this.settings.removeStaleAccessories) {
-        this.log.warn(`Removing stale fan ${accessory.displayName}; it was not discovered this run.`);
-        this.controllers.get(uuid)?.stop();
-        this.controllers.delete(uuid);
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.accessories.delete(uuid);
+      const device = (accessory.context as Context).device;
+      if (!device) {
+        continue;
+      }
+
+      if (!device.unavailableSince) {
+        this.log.warn(`Keeping cached fan ${accessory.displayName}; it was not discovered this run.`);
+        (accessory.context as Context).device = { ...device, unavailableSince: now };
         changed = true;
-      } else {
-        const device = (accessory.context as Context).device;
-        if (!device) {
-          continue;
-        }
+      }
 
-        if (!device.unavailableSince) {
-          this.log.warn(`Keeping cached fan ${accessory.displayName}; it was not discovered this run.`);
-          (accessory.context as Context).device = { ...device, unavailableSince: now };
-          changed = true;
-        }
-
-        if (!this.controllers.has(uuid)) {
-          this.attach(uuid, accessory, device);
-        }
+      if (!this.controllers.has(uuid)) {
+        this.attach(uuid, accessory, device);
       }
     }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
+import { discoverFans } from "../dist/discovery.js";
 import { GoWacFansPlatform } from "../dist/platform.js";
 
 const fan = {
@@ -104,6 +105,45 @@ describe("GoWacFansPlatform discovery logging", () => {
   });
 });
 
+describe("WacFanAccessory reads", () => {
+  it("serves cached values without waiting for a slow fan", async (t) => {
+    installFetchMock();
+    const { platform } = createPlatform();
+    await platform.discoverDevices();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    let requests = 0;
+    globalThis.fetch = () => {
+      requests += 1;
+      return new Promise(() => undefined);
+    };
+    const now = Date.now();
+    t.mock.method(Date, "now", () => now + 60000);
+
+    assert.equal(await readCharacteristic(platform, "Active"), 0);
+    assert.equal(requests, 1);
+  });
+
+  it("reports a HomeKit communication failure when no state is cached", async () => {
+    globalThis.fetch = async (_url, init) => {
+      if (JSON.parse(String(init?.body ?? "{}")).queryStaticShadowData) {
+        return jsonResponse(fan);
+      }
+
+      throw new Error("This operation was aborted");
+    };
+    const { platform } = createPlatform();
+    await platform.discoverDevices();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await assert.rejects(readCharacteristic(platform, "Active"), platform.api.hap.HapStatusError);
+  });
+});
+
+function readCharacteristic(platform, name) {
+  return platform.accessories.get(`uuid:${fan.clientId}`).getService("Fanv2").getCharacteristic(name).getHandler();
+}
+
 function installFetchMock(staticInfoAvailable = () => true) {
   globalThis.fetch = async (_url, init) => {
     const payload = JSON.parse(String(init?.body ?? "{}"));
@@ -132,12 +172,8 @@ function jsonResponse(data) {
 function createPlatform() {
   const log = createLogMessages();
   const api = createApi();
-  const platform = new GoWacFansPlatform(createLogger(log), {
-    hosts: [fan.host],
-    discover: false,
-    discoveryIntervalMs: 0,
-    pollIntervalMs: 0
-  }, api);
+  const platform = new GoWacFansPlatform(createLogger(log), { platform: "GoWacFans" }, api);
+  platform.findFans = (cachedHosts) => discoverFans([fan.host, ...cachedHosts], 1000, false);
 
   return { log, platform };
 }
@@ -246,7 +282,8 @@ class FakeService {
 }
 
 class FakeCharacteristic {
-  onGet() {
+  onGet(handler) {
+    this.getHandler = handler;
     return this;
   }
 
