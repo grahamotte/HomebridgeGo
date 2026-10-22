@@ -6,9 +6,8 @@ Homebridge plugin for local Venstar thermostats using the
 ## Features
 
 - Discovers Venstar thermostats with SSDP.
-- Supports optional manual IP/hostname entries for thermostats that miss discovery.
 - Keeps cached HomeKit accessories when a thermostat is temporarily offline.
-- Uses request timeouts, state caching, and background polling to avoid slow HomeKit reads.
+- Answers HomeKit reads from cached state and refreshes in the background, so a slow thermostat does not stall the Home app.
 - Exposes thermostat mode, current temperature, target temperature, heat/cool thresholds, display units, and fan setting.
 
 ## Requirements
@@ -32,38 +31,17 @@ Homebridge plugin for local Venstar thermostats using the
 
 5. Add the `GoVenstar` platform in Homebridge.
 
-The plugin autodiscovers local Venstar thermostats with SSDP, so most installs only need the platform entry below.
-
-Minimal config:
+There are no settings. The plugin discovers local Venstar thermostats with SSDP, so the platform entry is all you need:
 
 ```json
 {
-  "platform": "GoVenstar",
-  "name": "GoVenstar"
+  "platform": "GoVenstar"
 }
 ```
 
-If autodiscovery is unreliable, add static hosts:
-
-```json
-{
-  "platform": "GoVenstar",
-  "name": "GoVenstar",
-  "hosts": ["192.168.1.50", "192.168.1.51"]
-}
-```
-
-## Options
-
-- `discover`: enable SSDP discovery. Default: `true`.
-- `hosts`: optional thermostat IP addresses or hostnames to query directly.
-- `discoveryTimeoutMs`: SSDP discovery window. Default: `5000`.
-- `requestTimeoutMs`: HTTP timeout for thermostat API calls. Default: `3000`.
-- `pollIntervalMs`: background refresh interval. Use `0` to disable polling. Default: `30000`.
-- `removeStaleAccessories`: remove cached thermostats that are not found during discovery. Default: `false`.
+Thermostat requests time out after 15 seconds and SSDP discovery listens for 10 seconds.
 
 ## Troubleshooting
 
-If a thermostat is intermittently missing, leave `removeStaleAccessories` disabled and add the thermostat IP to `hosts`. The plugin will keep the HomeKit accessory and mark it unavailable only when API calls fail.
-
-If HomeKit is slow to update, increase `requestTimeoutMs` only if the thermostat responds slowly. Very high values can make HomeKit feel less responsive.
+If a thermostat is missing, check that local API access is enabled and that it is on the same network as Homebridge.
+A thermostat that misses discovery after it has been added stays in HomeKit from cache.

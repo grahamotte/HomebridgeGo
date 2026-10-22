@@ -1,6 +1,7 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
 import type { GoVenstarPlatform } from "./platform.js";
 import { homeKitSerialNumber } from "./serial.js";
+import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "./settings.js";
 import {
   buildControlFromChange,
   mapVenstarToHomeKit,
@@ -35,7 +36,7 @@ export class Thermostat {
     private readonly accessory: PlatformAccessory,
     private readonly device: ThermostatDevice,
   ) {
-    this.client = new VenstarClient(device.host, platform.settings.requestTimeoutMs);
+    this.client = new VenstarClient(device.host, REQUEST_TIMEOUT_MS);
     this.service =
       this.accessory.getService(this.platform.Service.Thermostat) ||
       this.accessory.addService(this.platform.Service.Thermostat);
@@ -152,19 +153,18 @@ export class Thermostat {
   }
 
   private startPolling(): void {
-    if (this.platform.settings.pollIntervalMs === 0) {
-      return;
-    }
-
     const timer = setInterval(() => {
       this.refresh().catch((error: unknown) => this.logRefreshFailure(error));
-    }, this.platform.settings.pollIntervalMs);
+    }, POLL_INTERVAL_MS);
 
     timer.unref?.();
   }
 
   private async getValues(): Promise<ThermostatValues> {
-    if (this.values && Date.now() - this.lastRefreshMs < CACHE_TTL_MS) {
+    if (this.values) {
+      if (Date.now() - this.lastRefreshMs >= CACHE_TTL_MS) {
+        this.refresh().catch((error: unknown) => this.logRefreshFailure(error));
+      }
       return this.values;
     }
 
@@ -202,7 +202,10 @@ export class Thermostat {
 
   private async set(change: ThermostatChange): Promise<void> {
     try {
-      const current = await this.getValues();
+      const current =
+        this.values && Date.now() - this.lastRefreshMs < CACHE_TTL_MS
+          ? this.values
+          : await this.refresh();
       const control = buildControlFromChange(current, change);
       this.platform.log.debug(
         `${this.device.name}: setting mode=${control.mode}; fan=${control.fan}; heat=${control.heattemp}; cool=${control.cooltemp}`,
