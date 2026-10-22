@@ -7,8 +7,12 @@ import type {
   PlatformConfig,
   Service,
 } from "homebridge";
-import { normalizeHost, parseConfig, type GoVenstarConfig } from "./config.js";
-import { PLATFORM_NAME, PLUGIN_NAME } from "./settings.js";
+import {
+  DISCOVERY_TIMEOUT_MS,
+  PLATFORM_NAME,
+  PLUGIN_NAME,
+  REQUEST_TIMEOUT_MS,
+} from "./settings.js";
 import { homeKitSerialNumber } from "./serial.js";
 import { discoverSsdpDevices } from "./ssdp.js";
 import { Thermostat } from "./thermostat.js";
@@ -32,7 +36,6 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
-  public readonly settings: GoVenstarConfig;
 
   constructor(
     public readonly log: Logging,
@@ -41,7 +44,6 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
-    this.settings = parseConfig(config);
 
     this.api.on("didFinishLaunching", () => {
       this.discoverDevices().catch((error: unknown) => {
@@ -60,12 +62,7 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
     this.log.info("Discovering Venstar thermostats...");
 
     const devices = new Map<string, DiscoveredDevice>();
-    const discovered = await Promise.all([
-      this.settings.discover ? this.discoverWithSsdp() : Promise.resolve([]),
-      this.discoverManualHosts(),
-    ]);
-
-    for (const device of dedupeByHost(discovered.flat())) {
+    for (const device of dedupeByHost(await this.discoverWithSsdp())) {
       devices.set(device.id, device);
     }
 
@@ -73,28 +70,11 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
     this.log.info(`Venstar discovery finished: ${devices.size} thermostat(s) available.`);
   }
 
-  private async discoverManualHosts(): Promise<DiscoveredDevice[]> {
-    const results = await Promise.allSettled(
-      this.settings.hosts.map((host) => this.probeHost(host, `host:${host}`)),
-    );
-
-    return results
-      .filter((result): result is PromiseFulfilledResult<DiscoveredDevice> => {
-        if (result.status === "rejected") {
-          this.log.warn(String(result.reason));
-          return false;
-        }
-
-        return true;
-      })
-      .map((result) => result.value);
-  }
-
   private async discoverWithSsdp(): Promise<DiscoveredDevice[]> {
     const devices = new Map<string, DiscoveredDevice>();
     const responses = await discoverSsdpDevices(
       "venstar:thermostat:ecp",
-      this.settings.discoveryTimeoutMs,
+      DISCOVERY_TIMEOUT_MS,
     );
     const probes = responses.map((response) => {
       const host = hostFromSsdpLocation(response.location);
@@ -125,7 +105,7 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
     const normalizedHost = normalizeHost(host);
     const info = await new VenstarClient(
       normalizedHost,
-      this.settings.requestTimeoutMs,
+      REQUEST_TIMEOUT_MS,
     ).getInfo();
 
     return {
@@ -163,13 +143,6 @@ export class GoVenstarPlatform implements DynamicPlatformPlugin {
 
     for (const [uuid, accessory] of this.accessories) {
       if (seenUuids.has(uuid)) {
-        continue;
-      }
-
-      if (this.settings.removeStaleAccessories) {
-        this.log.info(`Removing stale thermostat ${accessory.displayName}.`);
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.accessories.delete(uuid);
         continue;
       }
 
@@ -215,6 +188,20 @@ function updateAccessoryContext(
     ...device,
     lastSeen: new Date().toISOString(),
   };
+}
+
+function normalizeHost(host: string): string {
+  const trimmed = host.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
+    return parsed.host;
+  } catch {
+    return trimmed.replace(/^https?:\/\//u, "").split("/")[0] ?? "";
+  }
 }
 
 function hostFromSsdpLocation(location: string | undefined): string {
