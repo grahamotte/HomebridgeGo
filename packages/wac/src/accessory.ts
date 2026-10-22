@@ -1,5 +1,6 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
 import type { GoWacFansPlatform } from "./platform.js";
+import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "./settings.js";
 import { mapState, speedFromHomeKit, WacClient, WacError, type FanChange, type FanValues } from "./wac.js";
 
 interface Device {
@@ -28,7 +29,7 @@ export class WacFanAccessory {
     private readonly accessory: PlatformAccessory,
     private readonly device: Device,
   ) {
-    this.client = new WacClient(device.host, platform.settings.requestTimeoutMs);
+    this.client = new WacClient(device.host, REQUEST_TIMEOUT_MS);
     this.fan =
       accessory.getService(platform.Service.Fanv2) ??
       accessory.addService(platform.Service.Fanv2);
@@ -77,13 +78,9 @@ export class WacFanAccessory {
   }
 
   private startPolling(): void {
-    if (this.platform.settings.pollIntervalMs === 0) {
-      return;
-    }
-
     this.pollTimer = setInterval(() => {
       this.refresh().catch((error: unknown) => this.logFailure(error));
-    }, this.platform.settings.pollIntervalMs);
+    }, POLL_INTERVAL_MS);
 
     this.pollTimer.unref?.();
   }
@@ -96,11 +93,18 @@ export class WacFanAccessory {
   }
 
   private async get(): Promise<FanValues> {
-    if (this.values && Date.now() - this.lastRefreshMs < CACHE_TTL_MS) {
+    if (this.values) {
+      if (Date.now() - this.lastRefreshMs >= CACHE_TTL_MS) {
+        this.refresh().catch((error: unknown) => this.logFailure(error));
+      }
       return this.values;
     }
 
-    return this.refresh();
+    try {
+      return await this.refresh();
+    } catch (error) {
+      throw this.toHapError(error);
+    }
   }
 
   private async refresh(): Promise<FanValues> {
