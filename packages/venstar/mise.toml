@@ -1,5 +1,10 @@
+[tasks.dependencies]
+description = "Install npm packages from the lockfile"
+run = "npm ci"
+
 [tasks.test]
 description = "Run lint, tests, build, and package validation"
+depends = ["dependencies"]
 run = "npm run validate"
 
 [tasks.check-clean]
