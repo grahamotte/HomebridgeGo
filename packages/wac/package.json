@@ -6,13 +6,13 @@
   "description": "A Homebridge plugin for local WAC and Modern Forms fans",
   "author": "Graham Otte",
   "license": "Apache-2.0",
-  "homepage": "https://github.com/grahamotte/HomebridgeGoWacFans",
+  "homepage": "https://github.com/grahamotte/HomebridgeGoWac",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/grahamotte/HomebridgeGoWacFans.git"
+    "url": "git+ssh://git@github.com/grahamotte/HomebridgeGoWac.git"
   },
   "bugs": {
-    "url": "https://github.com/grahamotte/HomebridgeGoWacFans/issues"
+    "url": "https://github.com/grahamotte/HomebridgeGoWac/issues"
   },
   "keywords": [
     "homebridge-plugin"
