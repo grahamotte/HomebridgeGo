@@ -6,7 +6,6 @@ const LIVING = `uuid:homebridge-go-lutron:${BRIDGE_ID}:79430373`;
 const MASTER = `uuid:homebridge-go-lutron:${BRIDGE_ID}:70492003`;
 const PICO = `uuid:homebridge-go-lutron:${BRIDGE_ID}:81234567`;
 
-
 describe("GoLutronPlatform", () => {
   it("registers each shade from a paired bridge", async () => {
     const { api, discoveries, fake, messages } = createPlatform();
@@ -159,6 +158,17 @@ describe("GoLutronPlatform", () => {
     ]);
     assert.deepEqual(messages.debug, ["mDNS discovery failed: no multicast"]);
     platform.stop();
+  });
+
+  it("cancels pairing quietly on shutdown", async () => {
+    const { api, fake, messages, platform } = createPlatform({ paired: false });
+    platform.start();
+    await until(() => fake.open.some((socket) => socket.options.port === 8083));
+    api.emit("shutdown");
+    await platform.refresh();
+
+    assert.deepEqual(fake.open, []);
+    assert.ok(!messages.warn.some((message) => message.startsWith("Pairing with")));
   });
 
   it("does nothing after shutdown", async () => {

@@ -50,3 +50,16 @@ git fetch origin
 git merge-base --is-ancestor origin/main main
 git push origin main:refs/heads/main
 '''
+
+[tasks.dev]
+description = "Run one plugin in a local Homebridge that rebuilds on every change"
+usage = 'arg "<package>" help="Plugin directory under packages/: lutron, venstar, wac, or yale"'
+depends = ["dependencies"]
+run = '''
+set -euo pipefail
+if [ ! -f "packages/${usage_package}/package.json" ]; then
+  echo "Unknown package: ${usage_package}" >&2
+  exit 1
+fi
+npm run watch --workspace "packages/${usage_package}"
+'''

@@ -1,3 +1,4 @@
+import net from "node:net";
 import os from "node:os";
 import { Bonjour, type Service } from "bonjour-service";
 import { BONJOUR_TYPE } from "./settings.js";
@@ -17,10 +18,13 @@ export const browseFans: Browse = async (timeoutMs) => {
   const bonjour = new Bonjour(undefined, () => undefined);
   try {
     const browser = bonjour.find({ type: BONJOUR_TYPE, protocol: "tcp" });
+    // Prefer IPv4 addresses: many Homebridge hosts cannot resolve .local names.
     browser.on("up", (service: Service) => {
-      for (const host of [...(service.addresses ?? []), service.host]) {
-        if (host && !host.includes(":")) {
-          hosts.add(host.endsWith(".") ? host.slice(0, -1) : host);
+      const addresses = (service.addresses ?? []).filter((address) => net.isIPv4(address));
+      const name = service.host?.endsWith(".") ? service.host.slice(0, -1) : service.host;
+      for (const host of addresses.length > 0 ? addresses : [name]) {
+        if (host) {
+          hosts.add(host);
         }
       }
     });

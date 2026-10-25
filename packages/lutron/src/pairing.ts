@@ -9,6 +9,7 @@ export interface PairingOptions {
   readonly timeoutMs: number;
   readonly requestTimeoutMs: number;
   readonly connect?: SocketFactory;
+  readonly signal?: AbortSignal;
 }
 
 interface SigningResult {
@@ -44,7 +45,16 @@ export async function pair(host: string, options: PairingOptions): Promise<Crede
 
   const timer = setTimeout(() => failed(new LeapError("the bridge button was not pressed in time")), options.timeoutMs);
   timer.unref?.();
+  const cancel = (): void => {
+    failed(new LeapError("pairing was cancelled"));
+    client.close();
+  };
+  options.signal?.addEventListener("abort", cancel, { once: true });
   try {
+    if (options.signal?.aborted) {
+      throw new LeapError("pairing was cancelled");
+    }
+
     await client.open();
     await button;
     const response = await client.exchange({
@@ -64,8 +74,11 @@ export async function pair(host: string, options: PairingOptions): Promise<Crede
       cert: result.Certificate,
       key: privateKey.export({ type: "pkcs8", format: "pem" }).toString()
     };
+  } catch (error) {
+    throw options.signal?.aborted ? new LeapError("pairing was cancelled") : error;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", cancel);
     client.close();
   }
 }

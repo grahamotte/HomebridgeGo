@@ -38,6 +38,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
   private refreshing?: Promise<void>;
   private refreshTimer?: ReturnType<typeof setInterval>;
   private stopped = false;
+  private readonly pairing = new AbortController();
   private reportedDiscoveryFailure = false;
   private reportedMissing = false;
 
@@ -76,6 +77,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
 
   stop(): void {
     this.stopped = true;
+    this.pairing.abort();
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
       this.refreshTimer = undefined;
@@ -160,7 +162,8 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       const credentials = await pair(host, {
         timeoutMs: this.timing.pairingTimeoutMs,
         requestTimeoutMs: this.timing.requestTimeoutMs,
-        connect: this.dependencies.connect
+        connect: this.dependencies.connect,
+        signal: this.pairing.signal
       });
       const id = await identify(host, credentials, this.dependencies.connect, this.timing.requestTimeoutMs);
       const record = { id, host, ...credentials };
@@ -170,7 +173,9 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
         this.ensureBridge(record);
       }
     } catch (error) {
-      this.log.warn(`Pairing with the bridge at ${host} failed: ${describe(error)}. Will retry.`);
+      if (!this.stopped) {
+        this.log.warn(`Pairing with the bridge at ${host} failed: ${describe(error)}. Will retry.`);
+      }
     }
   }
 

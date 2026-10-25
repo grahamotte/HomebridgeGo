@@ -3,6 +3,7 @@
   "pluginType": "platform",
   "singular": true,
   "strictValidation": true,
+  "headerDisplay": "Locks cannot be discovered. Add each lock with its Bluetooth address, offline key, and key slot.",
   "schema": {
     "type": "object",
     "properties": {
@@ -41,7 +42,11 @@
               "maximum": 255
             }
           },
-          "required": ["address", "key", "slot"]
+          "required": [
+            "address",
+            "key",
+            "slot"
+          ]
         },
         "default": []
       },
