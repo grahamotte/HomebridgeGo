@@ -1,0 +1,10 @@
+{
+  "pluginAlias": "GoVenstar",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Thermostats are discovered automatically with SSDP. There are no settings.",
+  "schema": {
+    "type": "object",
+    "properties": {}
+  }
+}
