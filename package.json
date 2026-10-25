@@ -1,0 +1,28 @@
+{
+  "name": "homebridge-go",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/lutron",
+    "packages/venstar",
+    "packages/wac",
+    "packages/yale"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspaces",
+    "validate": "npm run lint && npm test && npm pack --dry-run --workspaces"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "homebridge": "^2.4.0",
+    "nodemon": "^3.1.14",
+    "rimraf": "^6.1.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.0"
+  }
+}
