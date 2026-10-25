@@ -2,9 +2,27 @@
   "pluginAlias": "GoVenstar",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Thermostats are discovered automatically with SSDP. There are no settings.",
+  "strictValidation": true,
+  "headerDisplay": "Thermostats are discovered automatically with SSDP. Turn on local API access on each thermostat.",
   "schema": {
     "type": "object",
-    "properties": {}
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "GoVenstar"
+      },
+      "hosts": {
+        "title": "Addresses",
+        "description": "Optional. Thermostat addresses to add when SSDP discovery cannot reach them.",
+        "type": "array",
+        "items": {
+          "type": "string",
+          "title": "Address",
+          "placeholder": "192.168.1.218",
+          "pattern": "^[A-Za-z0-9.:-]+$"
+        }
+      }
+    }
   }
 }

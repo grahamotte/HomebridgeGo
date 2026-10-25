@@ -5,4 +5,5 @@ coverage
 *.log
 *.tsbuildinfo
 .DS_Store
-packages/*/test/hbConfig
+packages/*/test/hbConfig/*
+!packages/*/test/hbConfig/config.json

@@ -1,81 +1,70 @@
-import type {
-  API,
-  Characteristic,
-  DynamicPlatformPlugin,
-  Logging,
-  PlatformAccessory,
-  PlatformConfig,
-  Service
-} from "homebridge";
-import { YaleLockAccessory } from "./accessory.js";
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from "homebridge";
+import { LockAccessory } from "./accessory.js";
 import { Bluez, type BusFactory } from "./bluez.js";
-import { parseConfig, type GoYaleConfig } from "./config.js";
-import { DEFAULT_TIMING, type LockSettings, type LockTiming } from "./lock.js";
-import { PLATFORM_NAME, PLUGIN_NAME } from "./settings.js";
+import { parseConfig, type Settings } from "./config.js";
+import type { LockSettings } from "./lock.js";
+import { AccessoryRegistry } from "./registry.js";
+import { DEFAULT_TIMING, PLATFORM_NAME, PLUGIN_NAME, type Timing } from "./settings.js";
 
 interface Context {
   address?: string;
 }
 
+export interface PlatformDependencies {
+  readonly createBus?: BusFactory;
+  readonly timing?: Partial<Timing>;
+}
+
+// Locks cannot be discovered: each needs its offline key, so the configured list is the source of truth.
 export class GoYalePlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
-  public readonly settings: GoYaleConfig;
+  public readonly settings: Settings;
   public readonly bluez: Bluez;
-  private readonly accessories = new Map<string, PlatformAccessory>();
-  private readonly controllers = new Map<string, YaleLockAccessory>();
-  private readonly timing: LockTiming;
+  private readonly registry: AccessoryRegistry;
+  private readonly controllers = new Map<string, LockAccessory>();
+  private readonly timing: Timing;
 
   constructor(
     public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
-    createBus?: BusFactory,
-    timing: Partial<LockTiming> = {},
+    dependencies: PlatformDependencies = {},
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
+    this.registry = new AccessoryRegistry(api, log, PLUGIN_NAME, PLATFORM_NAME);
     const { settings, problems } = parseConfig(config);
     this.settings = settings;
-    this.timing = { ...DEFAULT_TIMING, idleDisconnectMs: settings.idleDisconnectMs, ...timing };
-    this.bluez = new Bluez(createBus, settings.adapter);
+    this.timing = { ...DEFAULT_TIMING, idleDisconnectMs: settings.idleDisconnectMs, ...dependencies.timing };
+    this.bluez = new Bluez(dependencies.createBus, settings.adapter);
     for (const problem of problems) {
-      this.log.error(`Lock ${problem.index + 1} skipped: ${problem.message}.`);
+      this.log.error(problem);
     }
 
-    api.on("didFinishLaunching", () => this.sync());
+    api.on("didFinishLaunching", () => this.start());
     api.on("shutdown", () => {
       this.stop().catch(() => undefined);
     });
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.accessories.set(accessory.UUID, accessory);
+    this.registry.configure(accessory);
   }
 
-  sync(): void {
-    const seen = new Set<string>();
+  start(): void {
+    const configured = new Set<string>();
     for (const lock of this.settings.locks) {
-      const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${lock.address}`);
-      seen.add(uuid);
-      const cached = this.accessories.get(uuid);
-      const accessory = cached ?? new this.api.platformAccessory(lock.name, uuid);
+      const accessory = this.registry.obtain(this.registry.uuid(`${PLUGIN_NAME}:${lock.address}`), lock.name);
+      configured.add(accessory.UUID);
       (accessory.context as Context).address = lock.address;
-      this.attach(uuid, accessory, lock);
-      if (cached) {
-        this.log.info(`Restored lock ${lock.name} (${lock.address}).`);
-      } else {
-        this.log.info(`Adding lock ${lock.name} (${lock.address}).`);
-        this.accessories.set(uuid, accessory);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
+      this.attach(accessory, lock);
+      this.registry.publish(accessory, `lock ${lock.name} (${lock.address})`);
     }
 
-    for (const [uuid, accessory] of this.accessories) {
-      if (!seen.has(uuid)) {
-        this.log.warn(`Removing lock ${accessory.displayName}; it is no longer configured.`);
-        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        this.accessories.delete(uuid);
+    for (const accessory of this.registry.all()) {
+      if (!configured.has(accessory.UUID)) {
+        this.registry.remove(accessory, `lock ${accessory.displayName}`, "it is no longer configured");
       }
     }
   }
@@ -87,9 +76,8 @@ export class GoYalePlatform implements DynamicPlatformPlugin {
     this.bluez.close();
   }
 
-  private attach(uuid: string, accessory: PlatformAccessory, lock: LockSettings): void {
-    const previous = this.controllers.get(uuid);
-    previous?.stop().catch(() => undefined);
-    this.controllers.set(uuid, new YaleLockAccessory(this, accessory, lock, this.timing));
+  private attach(accessory: PlatformAccessory, lock: LockSettings): void {
+    this.controllers.get(accessory.UUID)?.stop().catch(() => undefined);
+    this.controllers.set(accessory.UUID, new LockAccessory(this, accessory, lock, this.timing));
   }
 }

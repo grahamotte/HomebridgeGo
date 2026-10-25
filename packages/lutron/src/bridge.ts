@@ -1,4 +1,5 @@
-import { describe, LeapClient, LeapError, type Credentials, type LeapMessage, type SocketFactory } from "./leap.js";
+import { LeapClient, LeapError, type Credentials, type LeapMessage, type SocketFactory } from "./leap.js";
+import { describe, Reachability, type Log } from "./log.js";
 import { DEFAULT_TIMING, LEAP_PORT, type BridgeTiming } from "./settings.js";
 import type { BridgeRecord } from "./store.js";
 
@@ -23,12 +24,6 @@ export interface Pico {
   readonly model: string;
   readonly type: string;
   readonly buttons: readonly PicoButton[];
-}
-
-export interface BridgeLog {
-  debug(message: string): void;
-  info(message: string): void;
-  warn(message: string): void;
 }
 
 export interface BridgeHandlers {
@@ -71,15 +66,18 @@ export class LutronBridge {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private pingTimer?: ReturnType<typeof setInterval>;
   private online = false;
+  private connectedBefore = false;
+  private readonly reachability: Reachability;
 
   constructor(
     private readonly record: BridgeRecord,
-    private readonly log: BridgeLog,
+    private readonly log: Log,
     private readonly handlers: BridgeHandlers,
     private readonly connect?: SocketFactory,
     private readonly timing: BridgeTiming = DEFAULT_TIMING,
   ) {
     this.host = record.host;
+    this.reachability = new Reachability(log, `Bridge ${record.id}`);
   }
 
   get id(): string {
@@ -142,7 +140,7 @@ export class LutronBridge {
     }
 
     this.run().catch((error: unknown) => {
-      this.log.warn(`Bridge ${this.id} at ${this.host}: ${describe(error)}`);
+      this.reachability.failed(error);
       this.client?.close();
     });
   }
@@ -175,7 +173,9 @@ export class LutronBridge {
     this.applyStatus(initial);
     this.attempts = 0;
     this.setOnline(true);
-    this.log.info(`Connected to bridge ${this.id} at ${this.host} with ${shades.length} shade(s) and ${picos?.length ?? 0} Pico(s).`);
+    this.reachability.succeeded();
+    this.log[this.connectedBefore ? "debug" : "info"](`Connected to bridge ${this.id} at ${this.host} with ${shades.length} shade(s) and ${picos?.length ?? 0} Pico(s).`);
+    this.connectedBefore = true;
     this.pingTimer = setInterval(() => this.ping(client), this.timing.pingIntervalMs);
     this.pingTimer.unref?.();
   }
@@ -206,7 +206,7 @@ export class LutronBridge {
 
   private ping(client: LeapClient): void {
     client.request("ReadRequest", "/server/1/status/ping").catch((error: unknown) => {
-      this.log.warn(`Bridge ${this.id} stopped answering: ${describe(error)}`);
+      this.reachability.failed(new Error(`stopped answering: ${describe(error)}`));
       client.close();
     });
   }
@@ -219,7 +219,7 @@ export class LutronBridge {
     this.client = undefined;
     this.clearTimers();
     if (this.online) {
-      this.log.warn(`Lost connection to bridge ${this.id}: ${error ? error.message : "closed"}`);
+      this.reachability.failed(error ?? new Error("connection closed"));
     }
 
     this.setOnline(false);

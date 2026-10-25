@@ -2,13 +2,13 @@ export enum VenstarMode {
   Off = 0,
   Heat = 1,
   Cool = 2,
-  Auto = 3,
+  Auto = 3
 }
 
 export enum VenstarState {
   Idle = 0,
   Heating = 1,
-  Cooling = 2,
+  Cooling = 2
 }
 
 export interface VenstarInfo {
@@ -38,6 +38,8 @@ export interface ThermostatValues {
   readonly mode: VenstarMode;
   readonly fan: number;
   readonly useFahrenheit: boolean;
+  readonly heattemp: number;
+  readonly cooltemp: number;
   readonly currentTemperature: number;
   readonly heatTemperature: number;
   readonly coolTemperature: number;
@@ -59,11 +61,7 @@ export interface ThermostatChange {
 }
 
 export class VenstarError extends Error {
-  constructor(
-    message: string,
-    public readonly host: string,
-    public readonly cause?: unknown,
-  ) {
+  constructor(message: string, public readonly host: string, public readonly cause?: unknown) {
     super(message);
     this.name = "VenstarError";
   }
@@ -72,10 +70,7 @@ export class VenstarError extends Error {
 export class VenstarClient {
   private readonly baseUrl: URL;
 
-  constructor(
-    public readonly host: string,
-    private readonly requestTimeoutMs: number,
-  ) {
+  constructor(public readonly host: string, private readonly requestTimeoutMs: number) {
     this.baseUrl = new URL(`http://${host}`);
   }
 
@@ -96,8 +91,8 @@ export class VenstarClient {
           mode: control.mode,
           fan: control.fan,
           heattemp: control.heattemp,
-          cooltemp: control.cooltemp,
-        },
+          cooltemp: control.cooltemp
+        }
       });
       if (isRecord(data) && data.error) {
         throw new Error(String(data.reason ?? data.error));
@@ -107,13 +102,7 @@ export class VenstarClient {
     }
   }
 
-  private async requestJson(
-    path: string,
-    options: {
-      readonly method?: "GET" | "POST";
-      readonly params?: Record<string, string | number>;
-    } = {},
-  ): Promise<unknown> {
+  private async requestJson(path: string, options: { readonly method?: "GET" | "POST"; readonly params?: Record<string, string | number> } = {}): Promise<unknown> {
     const url = new URL(path, this.baseUrl);
     for (const [key, value] of Object.entries(options.params ?? {})) {
       url.searchParams.set(key, String(value));
@@ -125,7 +114,7 @@ export class VenstarClient {
     try {
       const response = await fetch(url, {
         method: options.method ?? "GET",
-        signal: controller.signal,
+        signal: controller.signal
       });
 
       if (!response.ok) {
@@ -157,7 +146,7 @@ export function parseVenstarInfo(data: unknown): VenstarInfo {
     cooltempmin: readOptionalNumber(data.cooltempmin),
     cooltempmax: readOptionalNumber(data.cooltempmax),
     heattempmin: readOptionalNumber(data.heattempmin),
-    heattempmax: readOptionalNumber(data.heattempmax),
+    heattempmax: readOptionalNumber(data.heattempmax)
   };
 }
 
@@ -171,28 +160,22 @@ export function mapVenstarToHomeKit(info: VenstarInfo): ThermostatValues {
     mode: info.mode,
     fan: info.fan,
     useFahrenheit,
+    heattemp: info.heattemp,
+    cooltemp: info.cooltemp,
     currentTemperature,
     heatTemperature,
     coolTemperature,
-    targetTemperature: targetTemperatureForMode(
-      info.mode,
-      currentTemperature,
-      heatTemperature,
-      coolTemperature,
-    ),
+    targetTemperature: targetTemperatureForMode(info.mode, currentTemperature, heatTemperature, coolTemperature),
     temperatureDisplayUnits: useFahrenheit ? 1 : 0,
     currentHeatingCoolingState: currentStateForVenstarState(info.state),
     targetHeatingCoolingState: targetStateForVenstarMode(info.mode),
     heatingThresholdTemperature: clamp(heatTemperature, 0, 25),
     coolingThresholdTemperature: clamp(coolTemperature, 10, 35),
-    fanActive: info.fan === 0 ? 0 : 1,
+    fanActive: info.fan === 0 ? 0 : 1
   };
 }
 
-export function buildControlFromChange(
-  current: ThermostatValues,
-  change: ThermostatChange,
-): VenstarControl {
+export function buildControlFromChange(current: ThermostatValues, change: ThermostatChange): VenstarControl {
   const mode = change.mode ?? current.mode;
   const fan = change.fan ?? current.fan;
   let heatTemperature = change.heatTemperature ?? current.heatTemperature;
@@ -213,8 +196,10 @@ export function buildControlFromChange(
   return {
     mode,
     fan,
-    heattemp: fromHomeKitTemperature(heatTemperature, current.useFahrenheit),
-    cooltemp: fromHomeKitTemperature(coolTemperature, current.useFahrenheit),
+    // Unchanged setpoints are sent back exactly as the thermostat reported them, so a
+    // Celsius round trip cannot nudge them (76°F would otherwise come back as 75.99°F).
+    heattemp: heatTemperature === current.heatTemperature ? current.heattemp : fromHomeKitTemperature(heatTemperature, current.useFahrenheit),
+    cooltemp: coolTemperature === current.coolTemperature ? current.cooltemp : fromHomeKitTemperature(coolTemperature, current.useFahrenheit)
   };
 }
 
@@ -226,12 +211,7 @@ export function fromHomeKitTemperature(value: number, useFahrenheit: boolean): n
   return round2(useFahrenheit ? (value * 9) / 5 + 32 : value);
 }
 
-function targetTemperatureForMode(
-  mode: VenstarMode,
-  currentTemperature: number,
-  heatTemperature: number,
-  coolTemperature: number,
-): number {
+function targetTemperatureForMode(mode: VenstarMode, currentTemperature: number, heatTemperature: number, coolTemperature: number): number {
   if (mode === VenstarMode.Heat) {
     return heatTemperature;
   }

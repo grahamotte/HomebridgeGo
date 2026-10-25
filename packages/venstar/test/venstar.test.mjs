@@ -4,7 +4,7 @@ import {
   buildControlFromChange,
   mapVenstarToHomeKit,
   parseVenstarInfo,
-  VenstarMode,
+  VenstarMode
 } from "../dist/venstar.js";
 
 const fahrenheitInfo = {
@@ -16,7 +16,7 @@ const fahrenheitInfo = {
   tempunits: 0,
   spacetemp: 70,
   heattemp: 68,
-  cooltemp: 76,
+  cooltemp: 76
 };
 
 describe("Venstar mapping", () => {
@@ -38,7 +38,7 @@ describe("Venstar mapping", () => {
       parseVenstarInfo({
         ...fahrenheitInfo,
         mode: 3,
-        state: 0,
+        state: 0
       }),
     );
 
@@ -51,7 +51,7 @@ describe("Venstar mapping", () => {
       parseVenstarInfo({
         ...fahrenheitInfo,
         fan: 0,
-        fanstate: 1,
+        fanstate: 1
       }),
     );
 
@@ -64,34 +64,41 @@ describe("Venstar mapping", () => {
         ...fahrenheitInfo,
         mode: 3,
         heattemp: 68,
-        cooltemp: 76,
+        cooltemp: 76
       }),
     );
 
     const control = buildControlFromChange(current, {
-      targetTemperature: 22,
+      targetTemperature: 22
     });
 
     assert.deepEqual(control, {
       mode: VenstarMode.Auto,
       fan: 0,
       heattemp: 67.6,
-      cooltemp: 75.6,
+      cooltemp: 75.6
     });
+  });
+
+  it("sends unchanged setpoints back exactly as reported", () => {
+    const current = mapVenstarToHomeKit(parseVenstarInfo(fahrenheitInfo));
+    const control = buildControlFromChange(current, { heatTemperature: 21 });
+
+    assert.equal(control.cooltemp, 76);
   });
 
   it("builds complete control payloads while preserving unchanged values", () => {
     const current = mapVenstarToHomeKit(parseVenstarInfo(fahrenheitInfo));
     const control = buildControlFromChange(current, {
       mode: VenstarMode.Cool,
-      coolTemperature: 25,
+      coolTemperature: 25
     });
 
     assert.deepEqual(control, {
       mode: VenstarMode.Cool,
       fan: 0,
       heattemp: 68,
-      cooltemp: 77,
+      cooltemp: 77
     });
   });
 });

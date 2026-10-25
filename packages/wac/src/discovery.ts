@@ -1,94 +1,82 @@
+import net from "node:net";
 import os from "node:os";
 import { Bonjour, type Service } from "bonjour-service";
+import { BONJOUR_TYPE } from "./settings.js";
 import { WacClient, type FanInfo } from "./wac.js";
 
-export interface DiscoveredFan extends FanInfo {
+export interface Fan extends FanInfo {
   readonly host: string;
 }
 
-export async function discoverFans(
-  hosts: readonly string[],
-  timeoutMs: number,
-  includeLocalScan: boolean,
-): Promise<DiscoveredFan[]> {
-  const bonjourHosts = includeLocalScan ? await discoverBonjourHosts(timeoutMs) : [];
-  const candidates = [...new Set([...hosts, ...bonjourHosts, ...(includeLocalScan ? localCandidates() : [])])];
-  const found = new Map<string, DiscoveredFan>();
+export type Browse = (timeoutMs: number) => Promise<string[]>;
 
-  await eachLimit(candidates, 48, async (host) => {
-    try {
-      const info = await new WacClient(host, timeoutMs).getInfo();
-      if (info.clientId) {
-        found.set(info.clientId, { ...info, host });
+const PROBE_CONCURRENCY = 48;
+
+// Lists the hosts advertising the fans' Bonjour service.
+export const browseFans: Browse = async (timeoutMs) => {
+  const hosts = new Set<string>();
+  const bonjour = new Bonjour(undefined, () => undefined);
+  try {
+    const browser = bonjour.find({ type: BONJOUR_TYPE, protocol: "tcp" });
+    // Prefer IPv4 addresses: many Homebridge hosts cannot resolve .local names.
+    browser.on("up", (service: Service) => {
+      const addresses = (service.addresses ?? []).filter((address) => net.isIPv4(address));
+      const name = service.host?.endsWith(".") ? service.host.slice(0, -1) : service.host;
+      for (const host of addresses.length > 0 ? addresses : [name]) {
+        if (host) {
+          hosts.add(host);
+        }
       }
-    } catch {
-      // Most scanned hosts are not fans.
-    }
-  });
+    });
+    const timer = setInterval(() => browser.update(), Math.min(timeoutMs, 1000));
+    timer.unref?.();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, timeoutMs).unref?.();
+    });
+    clearInterval(timer);
+    browser.stop();
+  } finally {
+    bonjour.destroy();
+  }
 
+  return [...hosts];
+};
+
+// Asks each host for its fan details and returns the fans that answered, keyed by client ID.
+export async function probeFans(hosts: readonly string[], timeoutMs: number): Promise<Fan[]> {
+  const candidates = [...new Set(hosts)];
+  const found = new Map<string, Fan>();
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(PROBE_CONCURRENCY, candidates.length) }, async () => {
+    while (next < candidates.length) {
+      const host = candidates[next];
+      next += 1;
+      try {
+        const info = await new WacClient(host, timeoutMs).getInfo();
+        if (info.clientId) {
+          found.set(info.clientId, { ...info, host });
+        }
+      } catch {
+        // Most probed hosts are not fans, or are fans that are switched off.
+      }
+    }
+  }));
   return [...found.values()];
 }
 
-async function discoverBonjourHosts(timeoutMs: number): Promise<string[]> {
+// Every address on the local /24 networks, for when Bonjour cannot find a fan.
+export function subnetHosts(): string[] {
   const hosts = new Set<string>();
-  const bonjour = new Bonjour(undefined, () => undefined);
-  const browser = bonjour.find({ type: "easylink", protocol: "tcp" });
-
-  browser.on("up", (service: Service) => {
-    for (const host of [...(service.addresses ?? []), service.host]) {
-      if (host && !host.includes(":")) {
-        hosts.add(host.endsWith(".") ? host.slice(0, -1) : host);
-      }
-    }
-  });
-
-  const timer = setInterval(() => browser.update(), Math.min(timeoutMs, 1000));
-  timer.unref?.();
-  await delay(timeoutMs);
-  clearInterval(timer);
-  browser.stop();
-  bonjour.destroy();
-  return [...hosts];
-}
-
-function localCandidates(): string[] {
-  const ips = new Set<string>();
-
-  for (const net of Object.values(os.networkInterfaces()).flat()) {
-    if (!net || net.family !== "IPv4" || net.internal) {
+  for (const address of Object.values(os.networkInterfaces()).flat()) {
+    if (!address || address.family !== "IPv4" || address.internal) {
       continue;
     }
 
-    const octets = net.address.split(".");
-    if (octets.length === 4) {
-      for (let i = 1; i < 255; i += 1) {
-        ips.add(`${octets[0]}.${octets[1]}.${octets[2]}.${i}`);
-      }
+    const octets = address.address.split(".");
+    for (let index = 1; index < 255; index += 1) {
+      hosts.add(`${octets[0]}.${octets[1]}.${octets[2]}.${index}`);
     }
   }
 
-  return [...ips];
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-async function eachLimit<T>(
-  items: readonly T[],
-  limit: number,
-  task: (item: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const item = items[next];
-        next += 1;
-        await task(item);
-      }
-    }),
-  );
+  return [...hosts];
 }

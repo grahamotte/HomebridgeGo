@@ -1,246 +1,162 @@
-import type {
-  API,
-  Characteristic,
-  DynamicPlatformPlugin,
-  Logging,
-  PlatformAccessory,
-  PlatformConfig,
-  Service,
-} from "homebridge";
-import {
-  DISCOVERY_TIMEOUT_MS,
-  PLATFORM_NAME,
-  PLUGIN_NAME,
-  REQUEST_TIMEOUT_MS,
-} from "./settings.js";
-import { homeKitSerialNumber } from "./serial.js";
-import { discoverSsdpDevices } from "./ssdp.js";
-import { Thermostat } from "./thermostat.js";
-import { VenstarClient } from "./venstar.js";
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from "homebridge";
+import { ThermostatAccessory } from "./accessory.js";
+import { parseConfig, type Settings } from "./config.js";
+import { hostnameOnly, probeThermostats, searchSsdp, type SsdpSearch, type Thermostat } from "./discovery.js";
+import { describe } from "./log.js";
+import { AccessoryRegistry } from "./registry.js";
+import { DEFAULT_TIMING, PLATFORM_NAME, PLUGIN_NAME, SSDP_SEARCH_TARGET, type Timing } from "./settings.js";
 
-interface DiscoveredDevice {
-  readonly id: string;
-  readonly host: string;
-  readonly name: string;
-  readonly serialNumber: string;
-  readonly usn?: string;
+interface Context {
+  device?: Thermostat;
 }
 
-interface VenstarAccessoryContext {
-  device?: DiscoveredDevice & {
-    readonly lastSeen: string;
-  };
+export interface PlatformDependencies {
+  readonly search?: SsdpSearch;
+  readonly timing?: Partial<Timing>;
 }
 
 export class GoVenstarPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
-  public readonly accessories: Map<string, PlatformAccessory> = new Map();
+  public readonly settings: Settings;
+  private readonly registry: AccessoryRegistry;
+  private readonly controllers = new Map<string, ThermostatAccessory>();
+  private readonly timing: Timing;
+  private refreshing?: Promise<void>;
+  private refreshTimer?: ReturnType<typeof setInterval>;
+  private stopped = false;
+  private reportedSearchFailure = false;
+  private reportedMissing = false;
 
   constructor(
     public readonly log: Logging,
     public readonly config: PlatformConfig,
-    public readonly api: API
+    public readonly api: API,
+    private readonly dependencies: PlatformDependencies = {},
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
+    this.timing = { ...DEFAULT_TIMING, ...dependencies.timing };
+    this.registry = new AccessoryRegistry(api, log, PLUGIN_NAME, PLATFORM_NAME);
+    const { settings, problems } = parseConfig(config);
+    this.settings = settings;
+    for (const problem of problems) {
+      this.log.error(problem);
+    }
 
-    this.api.on("didFinishLaunching", () => {
-      this.discoverDevices().catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.log.error(`Discovery failed: ${message}`);
-      });
-    });
+    api.on("didFinishLaunching", () => this.start());
+    api.on("shutdown", () => this.stop());
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.log.info("Loading accessory from cache:", accessory.displayName);
-    this.accessories.set(accessory.UUID, accessory);
+    this.registry.configure(accessory);
   }
 
-  async discoverDevices(): Promise<void> {
-    this.log.info("Discovering Venstar thermostats...");
-
-    const devices = new Map<string, DiscoveredDevice>();
-    for (const device of dedupeByHost(await this.discoverWithSsdp())) {
-      devices.set(device.id, device);
+  start(): void {
+    // Cached thermostats answer HomeKit straight away; discovery then updates their addresses.
+    for (const accessory of this.registry.all()) {
+      const device = (accessory.context as Context).device;
+      if (device) {
+        this.attach(accessory, device);
+      }
     }
 
-    this.syncAccessories([...devices.values()]);
-    this.log.info(`Venstar discovery finished: ${devices.size} thermostat(s) available.`);
+    this.refresh().catch(() => undefined);
+    this.refreshTimer = setInterval(() => {
+      this.refresh().catch(() => undefined);
+    }, this.timing.discoveryIntervalMs);
+    this.refreshTimer.unref?.();
   }
 
-  private async discoverWithSsdp(): Promise<DiscoveredDevice[]> {
-    const devices = new Map<string, DiscoveredDevice>();
-    const responses = await discoverSsdpDevices(
-      "venstar:thermostat:ecp",
-      DISCOVERY_TIMEOUT_MS,
-    );
-    const probes = responses.map((response) => {
-      const host = hostFromSsdpLocation(response.location);
-      if (!host) {
-        return Promise.resolve();
-      }
+  stop(): void {
+    this.stopped = true;
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
 
-      const id = response.usn ? `ssdp:${response.usn}` : `host:${host}`;
-      return this.probeHost(host, id, response.usn)
-        .then((device) => {
-          devices.set(device.id, device);
-        })
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.log.debug(message);
-        });
+    for (const controller of this.controllers.values()) {
+      controller.stop();
+    }
+
+    this.controllers.clear();
+  }
+
+  refresh(): Promise<void> {
+    this.refreshing ??= this.discover()
+      .catch((error: unknown) => {
+        this.log.error(`Thermostat discovery failed: ${describe(error)}`);
+      })
+      .finally(() => {
+        this.refreshing = undefined;
+      });
+    return this.refreshing;
+  }
+
+  private async discover(): Promise<void> {
+    const search = this.dependencies.search ?? searchSsdp;
+    const responses = await search(SSDP_SEARCH_TARGET, this.timing.discoveryTimeoutMs).then((devices) => {
+      this.reportedSearchFailure = false;
+      return devices;
+    }, (error: unknown) => {
+      this.log[this.reportedSearchFailure ? "debug" : "warn"](`SSDP discovery failed: ${describe(error)}`);
+      this.reportedSearchFailure = true;
+      return [];
     });
-
-    await Promise.allSettled(probes);
-    return [...devices.values()];
-  }
-
-  private async probeHost(
-    host: string,
-    fallbackId: string,
-    usn?: string,
-  ): Promise<DiscoveredDevice> {
-    const normalizedHost = normalizeHost(host);
-    const info = await new VenstarClient(
-      normalizedHost,
-      REQUEST_TIMEOUT_MS,
-    ).getInfo();
-
-    return {
-      id: fallbackId,
-      host: normalizedHost,
-      name: info.name,
-      serialNumber: homeKitSerialNumber(fallbackId, usn),
-      usn,
-    };
-  }
-
-  private syncAccessories(devices: readonly DiscoveredDevice[]): void {
-    const seenUuids = new Set<string>();
-
-    for (const device of devices) {
-      const uuid = this.api.hap.uuid.generate(device.id);
-      const accessory =
-        this.accessories.get(uuid) ??
-        this.findReusableCachedAccessory(device) ??
-        new this.api.platformAccessory(device.name, uuid);
-      const wasCached = this.accessories.has(accessory.UUID);
-
-      seenUuids.add(accessory.UUID);
-      updateAccessoryContext(accessory, device);
-      new Thermostat(this, accessory, device);
-
-      if (wasCached) {
-        this.log.info(`Restored thermostat ${device.name} at ${device.host}.`);
-      } else {
-        this.log.info(`Adding thermostat ${device.name} at ${device.host}.`);
-        this.accessories.set(accessory.UUID, accessory);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      }
+    const found = await probeThermostats(responses, this.settings.hosts, this.timing.requestTimeoutMs, this.log);
+    if (this.stopped) {
+      return;
     }
 
-    for (const [uuid, accessory] of this.accessories) {
-      if (seenUuids.has(uuid)) {
-        continue;
-      }
+    for (const thermostat of found) {
+      this.sync(thermostat);
+    }
 
-      const context = accessory.context as VenstarAccessoryContext;
-      if (context.device) {
-        this.log.warn(
-          `Keeping cached thermostat ${context.device.name}; it was not discovered this run.`,
-        );
-        new Thermostat(this, accessory, context.device);
-      }
+    const missing = found.length === 0 && this.registry.all().length === 0;
+    if (missing && !this.reportedMissing) {
+      this.log.warn("No Venstar thermostat found. Check that local API access is on, or set hosts if SSDP is blocked on this network.");
+    }
+
+    this.reportedMissing = missing;
+  }
+
+  private sync(found: Thermostat): void {
+    const accessory = this.findCached(found) ?? this.registry.obtain(this.registry.uuid(found.id), found.name);
+    const context = accessory.context as Context;
+    const previous = context.device;
+    // A thermostat found only by address keeps the identity it was first saved with.
+    const device = previous && !found.id.startsWith("ssdp:") ? { ...found, id: previous.id, serialNumber: previous.serialNumber } : found;
+    context.device = device;
+    if (previous && previous.host !== device.host) {
+      this.log.info(`${device.name} moved from ${previous.host} to ${device.host}.`);
+    }
+
+    this.attach(accessory, device);
+    this.registry.publish(accessory, `thermostat ${device.name} at ${device.host}`);
+  }
+
+  private attach(accessory: PlatformAccessory, device: Thermostat): void {
+    const controller = this.controllers.get(accessory.UUID);
+    if (controller) {
+      controller.update(device);
+    } else {
+      this.controllers.set(accessory.UUID, new ThermostatAccessory(this, accessory, device, this.timing));
     }
   }
 
-  private findReusableCachedAccessory(
-    device: DiscoveredDevice,
-  ): PlatformAccessory | undefined {
-    const legacyHost = hostnameOnly(device.host);
-    const legacyUuids = [
-      this.api.hap.uuid.generate(legacyHost),
-      this.api.hap.uuid.generate(`host:${device.host}`),
-    ];
-
-    for (const uuid of legacyUuids) {
-      const accessory = this.accessories.get(uuid);
+  // Finds a cached accessory for a thermostat, including ones saved under the UUIDs older versions generated.
+  private findCached(found: Thermostat): PlatformAccessory | undefined {
+    const uuids = [found.id, hostnameOnly(found.host), `host:${found.host}`].map((id) => this.registry.uuid(id));
+    for (const uuid of uuids) {
+      const accessory = this.registry.get(uuid);
       if (accessory) {
         return accessory;
       }
     }
 
-    return [...this.accessories.values()].find((accessory) => {
-      const context = accessory.context as VenstarAccessoryContext;
-      return context.device?.host === device.host || context.device?.id === device.id;
+    return this.registry.all().find((accessory) => {
+      const device = (accessory.context as Context).device;
+      return device?.id === found.id || device?.host === found.host;
     });
   }
 }
-
-function updateAccessoryContext(
-  accessory: PlatformAccessory,
-  device: DiscoveredDevice,
-): void {
-  const context = accessory.context as VenstarAccessoryContext;
-  context.device = {
-    ...device,
-    lastSeen: new Date().toISOString(),
-  };
-}
-
-function normalizeHost(host: string): string {
-  const trimmed = host.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  try {
-    const parsed = new URL(trimmed.includes("://") ? trimmed : `http://${trimmed}`);
-    return parsed.host;
-  } catch {
-    return trimmed.replace(/^https?:\/\//u, "").split("/")[0] ?? "";
-  }
-}
-
-function hostFromSsdpLocation(location: string | undefined): string {
-  if (!location) {
-    return "";
-  }
-
-  try {
-    return normalizeHost(new URL(location).host);
-  } catch {
-    return "";
-  }
-}
-
-function dedupeByHost(devices: readonly DiscoveredDevice[]): DiscoveredDevice[] {
-  const byHost = new Map<string, DiscoveredDevice>();
-
-  for (const device of devices) {
-    const existing = byHost.get(device.host);
-    if (!existing || shouldPreferDevice(device, existing)) {
-      byHost.set(device.host, device);
-    }
-  }
-
-  return [...byHost.values()];
-}
-
-function shouldPreferDevice(
-  candidate: DiscoveredDevice,
-  existing: DiscoveredDevice,
-): boolean {
-  return candidate.id.startsWith("ssdp:") && !existing.id.startsWith("ssdp:");
-}
-
-function hostnameOnly(host: string): string {
-  try {
-    return new URL(`http://${host}`).hostname;
-  } catch {
-    return host;
-  }
-}
-

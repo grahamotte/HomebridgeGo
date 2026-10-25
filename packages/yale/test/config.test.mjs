@@ -36,11 +36,11 @@ describe("parseConfig", () => {
 
     assert.deepEqual(settings.locks.map((lock) => [lock.name, lock.address, lock.slot]), [["Lock", "A4:C1:38:5E:2D:73", 2]]);
     assert.deepEqual(problems, [
-      { index: 1, message: "lock entry must be an object" },
-      { index: 2, message: "address must be a Bluetooth address like A4:C1:38:5E:2D:73" },
-      { index: 3, message: "key must be 32 hexadecimal characters" },
-      { index: 4, message: "slot must be an integer from 0 to 255" },
-      { index: 5, message: "duplicate address A4:C1:38:5E:2D:73" }
+      "Lock 2 skipped: lock entry must be an object.",
+      "Lock 3 skipped: address must be a Bluetooth address like A4:C1:38:5E:2D:73.",
+      "Lock 4 skipped: key must be 32 hexadecimal characters.",
+      "Lock 5 skipped: slot must be an integer from 0 to 255.",
+      "Lock 6 skipped: duplicate address A4:C1:38:5E:2D:73."
     ]);
   });
 

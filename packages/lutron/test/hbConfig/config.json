@@ -1,0 +1,15 @@
+{
+  "bridge": {
+    "name": "GoLutron Dev",
+    "username": "0E:47:4F:00:00:01",
+    "port": 51831,
+    "pin": "031-45-154"
+  },
+  "platforms": [
+    {
+      "platform": "GoLutron",
+      "name": "GoLutron"
+    }
+  ],
+  "accessories": []
+}

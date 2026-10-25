@@ -4,12 +4,13 @@ import { identify, isPicoType, isShadeType, LutronBridge, parsePicos, parseShade
 import { BRIDGE_HOST, BRIDGE_ID, BUTTONS, CREDENTIALS, DEVICES, FakeBridge, FAST_TIMING, settle, until } from "./fakes.mjs";
 
 function createBridge(fake = new FakeBridge(), timing = {}) {
-  const logs = { debug: [], info: [], warn: [] };
+  const logs = { debug: [], error: [], info: [], warn: [] };
   const events = { shades: [], picos: [], levels: [], buttons: [], online: [] };
   const bridge = new LutronBridge({ id: BRIDGE_ID, host: BRIDGE_HOST, ...CREDENTIALS }, {
     debug: (message) => logs.debug.push(message),
     info: (message) => logs.info.push(message),
-    warn: (message) => logs.warn.push(message)
+    warn: (message) => logs.warn.push(message),
+    error: (message) => logs.error.push(message)
   }, {
     devices: (shades, picos) => {
       events.shades.push(shades);
@@ -164,13 +165,15 @@ describe("LutronBridge", () => {
     await until(() => bridge.isOnline);
 
     assert.equal(fake.sockets.length, 4);
-    assert.equal(logs.warn.filter((message) => message.includes("ECONNREFUSED")).length, 3);
-    assert.deepEqual(logs.debug, [1, 2, 4].map((delay) => `Reconnecting to bridge ${BRIDGE_ID} in ${delay} ms.`));
+    assert.deepEqual(logs.warn, [`Bridge ${BRIDGE_ID}: unreachable: connect ECONNREFUSED ${BRIDGE_HOST}:8081`]);
+    assert.deepEqual(logs.debug.filter((message) => message.includes("ECONNREFUSED")).length, 2);
+    assert.deepEqual(logs.debug.filter((message) => message.startsWith("Reconnecting")), [1, 2, 4].map((delay) => `Reconnecting to bridge ${BRIDGE_ID} in ${delay} ms.`));
+    assert.deepEqual(logs.info, [`Bridge ${BRIDGE_ID}: reachable again`, `Connected to bridge ${BRIDGE_ID} at ${BRIDGE_HOST} with 2 shade(s) and 1 Pico(s).`]);
 
     fake.drop();
     await until(() => events.online.length === 3);
     assert.deepEqual(events.online, [true, false, true]);
-    assert.ok(logs.warn.includes(`Lost connection to bridge ${BRIDGE_ID}: connection closed`));
+    assert.ok(logs.warn.includes(`Bridge ${BRIDGE_ID}: unreachable: connection closed`));
     assert.equal(events.shades.length, 2);
     bridge.stop();
   });
@@ -182,7 +185,8 @@ describe("LutronBridge", () => {
     bridge.start();
     await until(() => bridge.isOnline);
 
-    assert.deepEqual(logs.debug.map((message) => Number(/in (\d+) ms/u.exec(message)[1])), [1, 2, 4, 8, 8, 8]);
+    const delays = logs.debug.filter((message) => message.startsWith("Reconnecting")).map((message) => Number(/in (\d+) ms/u.exec(message)[1]));
+    assert.deepEqual(delays, [1, 2, 4, 8, 8, 8]);
     bridge.stop();
   });
 
@@ -209,7 +213,7 @@ describe("LutronBridge", () => {
 
     fake.silent.add("/server/1/status/ping");
     await until(() => events.online.includes(false));
-    assert.ok(logs.warn.some((message) => message === `Bridge ${BRIDGE_ID} stopped answering: /server/1/status/ping timed out`));
+    assert.ok(logs.warn.includes(`Bridge ${BRIDGE_ID}: unreachable: stopped answering: /server/1/status/ping timed out`));
     fake.silent.clear();
     await until(() => events.online.length === 3);
     bridge.stop();

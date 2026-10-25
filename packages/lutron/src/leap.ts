@@ -277,10 +277,6 @@ export function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-export function describe(error: unknown): string {
-  return asError(error).message;
-}
-
 function describeFailure(message: LeapMessage): string {
   const body = message.Body as { Message?: unknown; Exception?: { Message?: unknown } } | undefined;
   const detail = typeof body?.Message === "string"

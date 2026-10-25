@@ -12,7 +12,7 @@ async function createAccessory(fakeLock = new FakeLock(), config = {}) {
     locks: [{ name: "Front Door", address: ADDRESS, key: KEY, slot: SLOT }],
     pollIntervalSeconds: 0,
     ...config
-  }, api, () => bus, FAST_TIMING);
+  }, api, { createBus: () => bus, timing: FAST_TIMING });
   api.emit("didFinishLaunching");
   const accessory = api.registered[0];
   const mechanism = accessory.getService("LockMechanism");
@@ -22,7 +22,7 @@ async function createAccessory(fakeLock = new FakeLock(), config = {}) {
   return { accessory, battery, bus, current, fakeLock, messages, platform, target };
 }
 
-describe("YaleLockAccessory", () => {
+describe("LockAccessory", () => {
   it("publishes accessory information and the initial state", async () => {
     const { accessory, battery, current, platform, target } = await createAccessory();
     const info = accessory.getService("AccessoryInformation");
@@ -142,7 +142,7 @@ describe("YaleLockAccessory", () => {
     const { messages, platform } = await createAccessory(new FakeLock({ slot: 9 }));
 
     await until(() => messages.warn.length > 0);
-    assert.deepEqual(messages.warn, ["Front Door: refresh failed: Lock rejected the key; check the key and slot"]);
+    assert.deepEqual(messages.warn, ["Front Door: unreachable: Lock rejected the key; check the key and slot"]);
     await platform.stop();
   });
 });

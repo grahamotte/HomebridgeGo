@@ -1,37 +1,25 @@
 # Go Venstar
 
-Homebridge plugin for local Venstar thermostats using the
-[Venstar local API](https://developer.venstar.com/documentation/).
+Homebridge plugin for Venstar thermostats. It talks to each thermostat directly over the
+[Venstar local API](https://developer.venstar.com/documentation/), with no Skyport cloud account.
 
 ## Features
 
-- Discovers Venstar thermostats with SSDP.
-- Keeps cached HomeKit accessories when a thermostat is temporarily offline.
-- Answers HomeKit reads from cached state and refreshes in the background, so a slow thermostat does not stall the Home app.
-- Exposes thermostat mode, current temperature, target temperature, heat/cool thresholds, display units, and fan setting.
+- Discovers thermostats with SSDP, and looks again every five minutes for new or moved ones.
+- Exposes thermostat mode, current temperature, target temperature, heat and cool thresholds,
+  display units, and the fan setting.
+- Answers HomeKit reads from the last known state and refreshes in the background, so a slow
+  thermostat does not stall the Home app.
+- Keeps thermostats in HomeKit while they are offline.
 
 ## Requirements
 
-- Homebridge 1.8 or newer.
-- Node.js 20+.
-- Venstar thermostats connected to Wi-Fi.
-- Local API access enabled on each thermostat.
-- Homebridge running on the same local network as the thermostats.
+- Venstar thermostats on Wi-Fi, on the same network as Homebridge.
+- Local API access turned on for each thermostat. On many models it is in the thermostat's Wi-Fi settings.
 
 ## Setup
 
-1. Connect each Venstar thermostat to Wi-Fi.
-2. Enable local API access on each thermostat. On many Venstar models this is under the thermostat's Wi-Fi settings.
-3. Make sure Homebridge is running on the same local network as the thermostats.
-4. Install the plugin through Homebridge UI or with:
-
-   ```sh
-   npm install -g homebridge-go-venstar
-   ```
-
-5. Add the `GoVenstar` platform in Homebridge.
-
-There are no settings. The plugin discovers local Venstar thermostats with SSDP, so the platform entry is all you need:
+Add the platform. There are no required settings.
 
 ```json
 {
@@ -39,9 +27,19 @@ There are no settings. The plugin discovers local Venstar thermostats with SSDP,
 }
 ```
 
-Thermostat requests time out after 15 seconds and SSDP discovery listens for 10 seconds.
+## Options
+
+- `hosts`: optional thermostat addresses, for thermostats SSDP discovery cannot reach, such as ones on
+  another subnet. They are used alongside discovery.
 
 ## Troubleshooting
 
-If a thermostat is missing, check that local API access is enabled and that it is on the same network as Homebridge.
-A thermostat that misses discovery after it has been added stays in HomeKit from cache.
+- If no thermostat is found, the log says so once. Check that local API access is on, or set `hosts`.
+- A thermostat that goes offline is logged once, with its recovery; retries are logged at debug level.
+- Thermostats are never removed automatically. Remove one you no longer have from the Homebridge UI's
+  cached accessories.
+
+## Notes
+
+Thermostat requests time out after 15 seconds and SSDP discovery listens for 10 seconds, because
+thermostats can be slow to answer on busy Wi-Fi.

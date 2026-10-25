@@ -1,7 +1,7 @@
 import type { PlatformConfig } from "homebridge";
 import type { LockSettings } from "./lock.js";
 
-export interface GoYaleConfig {
+export interface Settings {
   readonly locks: readonly LockSettings[];
   readonly adapter?: string;
   readonly pollIntervalMs: number;
@@ -9,21 +9,16 @@ export interface GoYaleConfig {
   readonly commandTimeoutMs: number;
 }
 
-export interface ConfigProblem {
-  readonly index: number;
-  readonly message: string;
-}
-
-export function parseConfig(config: PlatformConfig): { settings: GoYaleConfig; problems: readonly ConfigProblem[] } {
-  const problems: ConfigProblem[] = [];
+export function parseConfig(config: PlatformConfig): { settings: Settings; problems: readonly string[] } {
+  const problems: string[] = [];
   const locks: LockSettings[] = [];
   const entries: unknown[] = Array.isArray(config.locks) ? config.locks : [];
   entries.forEach((entry, index) => {
     const lock = readLock(entry);
     if (typeof lock === "string") {
-      problems.push({ index, message: lock });
+      problems.push(`Lock ${index + 1} skipped: ${lock}.`);
     } else if (locks.some((existing) => existing.address === lock.address)) {
-      problems.push({ index, message: `duplicate address ${lock.address}` });
+      problems.push(`Lock ${index + 1} skipped: duplicate address ${lock.address}.`);
     } else {
       locks.push(lock);
     }

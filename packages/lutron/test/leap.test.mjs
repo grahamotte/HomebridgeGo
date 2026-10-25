@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { describe as describeError, LeapClient, LeapError, statusCode } from "../dist/leap.js";
+import { LeapClient, LeapError, statusCode } from "../dist/leap.js";
 import { BRIDGE_HOST, CREDENTIALS, FakeBridge, settle, until } from "./fakes.mjs";
 
 function createClient(bridge = new FakeBridge(), options = {}) {
@@ -218,11 +218,9 @@ describe("LeapClient", () => {
   });
 });
 
-describe("statusCode and describe", () => {
-  it("parse status codes and error messages", () => {
+describe("statusCode", () => {
+  it("parses status codes", () => {
     assert.equal(statusCode({ Header: { StatusCode: "204 NoContent" } }), 204);
     assert.equal(statusCode({ Header: {} }), undefined);
-    assert.equal(describeError(new Error("boom")), "boom");
-    assert.equal(describeError("plain"), "plain");
   });
 });

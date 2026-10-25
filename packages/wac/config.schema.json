@@ -2,9 +2,27 @@
   "pluginAlias": "GoWacFans",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Fans are discovered automatically. There are no settings.",
+  "strictValidation": true,
+  "headerDisplay": "Fans are discovered automatically with Bonjour.",
   "schema": {
     "type": "object",
-    "properties": {}
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "GoWacFans"
+      },
+      "hosts": {
+        "title": "Addresses",
+        "description": "Optional. Fan addresses to add when Bonjour discovery cannot reach them.",
+        "type": "array",
+        "items": {
+          "type": "string",
+          "title": "Address",
+          "placeholder": "192.168.1.220",
+          "pattern": "^[A-Za-z0-9.:-]+$"
+        }
+      }
+    }
   }
 }

@@ -24,6 +24,8 @@ or Wi-Fi module.
 
 ## Setup
 
+Locks cannot be discovered, because each needs its offline key. Add each one:
+
 ```json
 {
   "platform": "GoYale",
@@ -47,6 +49,12 @@ or Wi-Fi module.
 - `idleDisconnectSeconds`: how long to stay connected after a command. Default: `30`.
 - `commandTimeoutSeconds`: abandon a lock or unlock request that has not reached the lock in time. Only the latest request runs. Default: `180`.
 - `keepConnected`: stay connected for faster commands and live state. Default: `false`.
+
+## Troubleshooting
+
+- A lock that cannot be reached is logged once, with its recovery; retries are logged at debug level.
+- Lock and unlock requests, and their results, are always logged.
+- Locks removed from `locks` are removed from HomeKit.
 
 ## Notes
 

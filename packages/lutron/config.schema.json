@@ -12,12 +12,16 @@
         "type": "string",
         "default": "GoLutron"
       },
-      "host": {
-        "title": "Bridge address",
-        "description": "Optional. Use this only when mDNS discovery is blocked on your network.",
-        "type": "string",
-        "placeholder": "192.168.1.192",
-        "pattern": "^[A-Za-z0-9.:-]+$"
+      "hosts": {
+        "title": "Addresses",
+        "description": "Optional. Bridge addresses to use instead of mDNS discovery, for networks where mDNS is blocked.",
+        "type": "array",
+        "items": {
+          "type": "string",
+          "title": "Address",
+          "placeholder": "192.168.1.192",
+          "pattern": "^[A-Za-z0-9.:-]+$"
+        }
       }
     }
   }

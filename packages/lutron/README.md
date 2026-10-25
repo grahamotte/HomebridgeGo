@@ -11,12 +11,14 @@ LEAP API, with no Lutron cloud account.
 - Exposes each Pico remote as a set of HomeKit buttons, one per Pico button, so a press can run
   HomeKit scenes and automations. The Pico keeps controlling whatever the bridge assigned it to.
 - Keeps shades and Picos in HomeKit while the bridge is offline and reconnects with backoff.
-- Treats empty LEAP responses as empty data, and contains every bridge error, so one bad response
-  cannot restart Homebridge.
+
+## Requirements
+
+- A Lutron Caséta Smart Bridge or Smart Bridge Pro on the same network as Homebridge.
 
 ## Setup
 
-Add the platform:
+Add the platform. There are no required settings.
 
 ```json
 {
@@ -28,17 +30,25 @@ When Homebridge finds a bridge it has not paired with, it logs a message asking 
 small black button on the back of the bridge. Press it within three minutes. The plugin saves the
 bridge certificate under the Homebridge storage path in `go-lutron/` and does not ask again.
 
-Dimmers, switches, and tilt-only wood blinds are not exposed.
-
 ## Options
 
-- `host`: optional bridge address. Use it only when mDNS is blocked on your network.
+- `hosts`: optional bridge addresses. Use them only when mDNS is blocked on your network; they replace
+  discovery. The single `host` setting from earlier versions still works.
+
+## Troubleshooting
+
+- If no bridge is found, the log says so once. Set `hosts` if mDNS does not reach Homebridge.
+- A bridge that goes offline is logged once, with its recovery; retries are logged at debug level.
+- Shades and Picos the bridge no longer reports are removed from HomeKit.
 
 ## Notes
+
+Dimmers, switches, and tilt-only wood blinds are not exposed.
 
 Shade positions map directly to the bridge's zone level: 0% is closed and 100% is open.
 
 Pico buttons report three kinds of press. A long press fires once a button has been held for
 0.6 seconds, which is also how holding raise or lower comes through. A double press is two taps
 within 0.4 seconds, so a single press is reported 0.4 seconds after the button is released.
+
 The pairing and LEAP message formats follow [pylutron-caseta](https://github.com/gurumitts/pylutron-caseta).

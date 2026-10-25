@@ -66,6 +66,17 @@ describe("pair", () => {
     await assert.rejects(pair(BRIDGE_HOST, { timeoutMs: 5000, requestTimeoutMs: 1000, connect: unreachable.connect }), { code: "ECONNREFUSED" });
   });
 
+  it("stops waiting for the button when cancelled", async () => {
+    const bridge = new FakeBridge();
+    const controller = new AbortController();
+    const pairing = pair(BRIDGE_HOST, { timeoutMs: 5000, requestTimeoutMs: 1000, connect: bridge.connect, signal: controller.signal });
+    await until(() => bridge.open.length === 1);
+    controller.abort();
+
+    await assert.rejects(pairing, { message: "pairing was cancelled" });
+    assert.deepEqual(bridge.open, []);
+  });
+
   it("rejects a signing response without certificates", async () => {
     const bridge = new FakeBridge();
     bridge.handlePairing = (socket, message) => socket.send({ Header: { StatusCode: "200 OK", ClientTag: message.Header.ClientTag }, Body: { SigningResult: {} } });

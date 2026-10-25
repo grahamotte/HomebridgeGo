@@ -1,0 +1,15 @@
+{
+  "bridge": {
+    "name": "GoWacFans Dev",
+    "username": "0E:47:4F:00:00:03",
+    "port": 51833,
+    "pin": "031-45-154"
+  },
+  "platforms": [
+    {
+      "platform": "GoWacFans",
+      "name": "GoWacFans"
+    }
+  ],
+  "accessories": []
+}
