@@ -80,6 +80,13 @@ describe("Venstar mapping", () => {
     });
   });
 
+  it("sends unchanged setpoints back exactly as reported", () => {
+    const current = mapVenstarToHomeKit(parseVenstarInfo(fahrenheitInfo));
+    const control = buildControlFromChange(current, { heatTemperature: 21 });
+
+    assert.equal(control.cooltemp, 76);
+  });
+
   it("builds complete control payloads while preserving unchanged values", () => {
     const current = mapVenstarToHomeKit(parseVenstarInfo(fahrenheitInfo));
     const control = buildControlFromChange(current, {

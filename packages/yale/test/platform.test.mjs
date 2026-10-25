@@ -13,7 +13,7 @@ function createPlatform(config = {}, bus = new FakeBus(new FakeLock())) {
     locks: [{ name: "Front Door", address: ADDRESS, key: KEY, slot: SLOT }],
     pollIntervalSeconds: 0,
     ...config
-  }, api, () => bus, FAST_TIMING);
+  }, api, { createBus: () => bus, timing: FAST_TIMING });
   return { api, bus, messages, platform };
 }
 

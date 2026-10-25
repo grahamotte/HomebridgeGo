@@ -1,307 +1,110 @@
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, describe, it } from "node:test";
-import { discoverFans } from "../dist/discovery.js";
-import { GoWacFansPlatform } from "../dist/platform.js";
+import { afterEach, describe, it } from "node:test";
+import { createPlatform, FakeFans, FakePlatformAccessory, HOST, info, settle, state } from "./fakes.mjs";
 
-const fan = {
-  clientId: "fan-1",
-  mac: "00:11:22:33:44:55",
-  deviceName: "center",
-  fanType: "Ceiling Fan",
-  firmwareVersion: "1.0.0",
-  lightType: "dimmer",
-  host: "192.168.1.220"
-};
-
-const fanState = {
-  clientId: fan.clientId,
-  fanOn: false,
-  fanSpeed: 1,
-  fanDirection: "forward",
-  lightOn: false,
-  lightBrightness: 100
-};
-
-let originalFetch;
-
-beforeEach(() => {
-  originalFetch = globalThis.fetch;
-});
+const UUID = "uuid:MF_1";
+const DEVICE = { ...info(), host: HOST };
+const originalFetch = globalThis.fetch;
+let running;
 
 afterEach(() => {
+  running?.platform.stop();
+  running = undefined;
   globalThis.fetch = originalFetch;
 });
 
-describe("GoWacFansPlatform discovery logging", () => {
-  it("logs initial discovery at info and unchanged rediscovery at debug", async () => {
-    installFetchMock();
-    const { log, platform } = createPlatform();
+function start(options) {
+  running = createPlatform(options);
+  return running;
+}
 
-    await platform.discoverDevices();
-    await flushPromises();
+function cachedFan(platform, device = DEVICE) {
+  const accessory = new FakePlatformAccessory(device.deviceName, UUID);
+  accessory.context.device = { ...device, lastSeen: "2026-01-01T00:00:00.000Z" };
+  platform.configureAccessory(accessory);
+  return accessory;
+}
 
-    assert.deepEqual(log.info, [
-      "Discovering WAC fans...",
-      "Adding fan center at 192.168.1.220.",
-      "WAC discovery finished: 1 fan(s) available."
-    ]);
+describe("GoWacFansPlatform", () => {
+  it("adds fans advertised over Bonjour", async () => {
+    const { api, messages, platform, sweeps } = start();
+    platform.start();
+    await platform.refresh();
 
-    clearLog(log);
-
-    await platform.discoverDevices();
-    await flushPromises();
-
-    assert.deepEqual(log.info, []);
-    assert.deepEqual(log.warn, []);
-    assert.deepEqual(log.debug, [
-      "Discovering WAC fans...",
-      "WAC discovery finished: 1 fan(s) available."
-    ]);
+    assert.deepEqual(api.registered.map((accessory) => [accessory.displayName, accessory.UUID, accessory.context.device]), [["Center", UUID, DEVICE]]);
+    assert.deepEqual(messages.info, [`Adding fan Center at ${HOST}.`]);
+    assert.deepEqual(sweeps, []);
   });
 
-  it("logs only when a cached fan becomes unavailable or recovers", async () => {
-    let staticInfoAvailable = true;
-    installFetchMock(() => staticInfoAvailable);
-    const { log, platform } = createPlatform();
+  it("restores a cached fan once and drops stale context fields", async () => {
+    const { api, messages, platform } = start();
+    const cached = cachedFan(platform);
+    platform.start();
+    await platform.refresh();
+    await platform.refresh();
 
-    await platform.discoverDevices();
-    await flushPromises();
-    clearLog(log);
-
-    staticInfoAvailable = false;
-    await platform.discoverDevices();
-    await flushPromises();
-
-    assert.deepEqual(log.warn, [
-      "Keeping cached fan center; it was not discovered this run."
-    ]);
-    assert.deepEqual(log.info, [
-      "WAC discovery finished: 0 fan(s) available."
-    ]);
-
-    clearLog(log);
-
-    await platform.discoverDevices();
-    await flushPromises();
-
-    assert.deepEqual(log.info, []);
-    assert.deepEqual(log.warn, []);
-    assert.deepEqual(log.debug, [
-      "Discovering WAC fans...",
-      "WAC discovery finished: 0 fan(s) available."
-    ]);
-
-    clearLog(log);
-    staticInfoAvailable = true;
-
-    await platform.discoverDevices();
-    await flushPromises();
-
-    assert.deepEqual(log.info, [
-      "Fan center is available again at 192.168.1.220.",
-      "WAC discovery finished: 1 fan(s) available."
-    ]);
-    assert.deepEqual(log.warn, []);
-  });
-});
-
-describe("WacFanAccessory reads", () => {
-  it("serves cached values without waiting for a slow fan", async (t) => {
-    installFetchMock();
-    const { platform } = createPlatform();
-    await platform.discoverDevices();
-    await new Promise((resolve) => setImmediate(resolve));
-
-    let requests = 0;
-    globalThis.fetch = () => {
-      requests += 1;
-      return new Promise(() => undefined);
-    };
-    const now = Date.now();
-    t.mock.method(Date, "now", () => now + 60000);
-
-    assert.equal(await readCharacteristic(platform, "Active"), 0);
-    assert.equal(requests, 1);
+    assert.deepEqual(api.registered, []);
+    assert.deepEqual(cached.context.device, DEVICE);
+    assert.deepEqual(messages.info, [`Restored fan Center at ${HOST}.`]);
   });
 
-  it("reports a HomeKit communication failure when no state is cached", async () => {
-    globalThis.fetch = async (_url, init) => {
-      if (JSON.parse(String(init?.body ?? "{}")).queryStaticShadowData) {
-        return jsonResponse(fan);
-      }
+  it("finds cached and configured fans without Bonjour", async () => {
+    const fans = new FakeFans({
+      [HOST]: { info: info(), state: state() },
+      "192.168.1.221": { info: info({ clientId: "MF_2", deviceName: "Porch" }), state: state({ clientId: "MF_2" }) }
+    });
+    const { api, platform, sweeps } = start({ advertised: [], config: { hosts: ["192.168.1.221"] }, fans });
+    cachedFan(platform);
+    platform.start();
+    await platform.refresh();
 
-      throw new Error("This operation was aborted");
-    };
-    const { platform } = createPlatform();
-    await platform.discoverDevices();
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(api.registered.map((accessory) => accessory.displayName), ["Porch"]);
+    assert.deepEqual(sweeps, []);
+  });
 
-    await assert.rejects(readCharacteristic(platform, "Active"), platform.api.hap.HapStatusError);
+  it("sweeps the local network for a missing fan at most once per interval", async () => {
+    const fans = new FakeFans({ "192.168.1.240": { info: info(), state: state() } });
+    const { messages, platform, sweeps } = start({ advertised: [], fans, subnet: ["192.168.1.239", "192.168.1.240"] });
+    const cached = cachedFan(platform);
+    platform.start();
+    await platform.refresh();
+    await platform.refresh();
+
+    assert.equal(sweeps.length, 1);
+    assert.equal(cached.context.device.host, "192.168.1.240");
+    assert.ok(messages.info.includes(`Center moved from ${HOST} to 192.168.1.240.`));
+  });
+
+  it("keeps a fan that cannot be found and warns once when none exist", async () => {
+    const { api, messages, platform } = start({ advertised: [], fans: new FakeFans({}) });
+    platform.start();
+    await platform.refresh();
+    await platform.refresh();
+
+    assert.deepEqual(api.registered, []);
+    assert.deepEqual(messages.warn, ["No WAC fan found. Set hosts if the fans are on another network."]);
+  });
+
+  it("warns once when Bonjour fails", async () => {
+    const { messages, platform } = start({ advertised: new Error("socket closed") });
+    platform.start();
+    await platform.refresh();
+    await platform.refresh();
+
+    assert.deepEqual(messages.warn, [
+      "Bonjour discovery failed: socket closed",
+      "No WAC fan found. Set hosts if the fans are on another network."
+    ]);
+    assert.deepEqual(messages.debug.filter((message) => message.startsWith("Bonjour")), ["Bonjour discovery failed: socket closed"]);
+  });
+
+  it("stops discovering after shutdown", async () => {
+    const { api, platform } = start();
+    api.emit("didFinishLaunching");
+    api.emit("shutdown");
+    await platform.refresh();
+    await settle();
+
+    assert.deepEqual(api.registered, []);
   });
 });
-
-function readCharacteristic(platform, name) {
-  return platform.accessories.get(`uuid:${fan.clientId}`).getService("Fanv2").getCharacteristic(name).getHandler();
-}
-
-function installFetchMock(staticInfoAvailable = () => true) {
-  globalThis.fetch = async (_url, init) => {
-    const payload = JSON.parse(String(init?.body ?? "{}"));
-
-    if (payload.queryStaticShadowData) {
-      if (!staticInfoAvailable()) {
-        throw new Error("Fan unavailable");
-      }
-
-      return jsonResponse(fan);
-    }
-
-    return jsonResponse(fanState);
-  };
-}
-
-function jsonResponse(data) {
-  return {
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    json: async () => data
-  };
-}
-
-function createPlatform() {
-  const log = createLogMessages();
-  const api = createApi();
-  const platform = new GoWacFansPlatform(createLogger(log), { platform: "GoWacFans" }, api);
-  platform.findFans = (cachedHosts) => discoverFans([fan.host, ...cachedHosts], 1000, false);
-
-  return { log, platform };
-}
-
-function createLogMessages() {
-  return {
-    debug: [],
-    error: [],
-    info: [],
-    warn: []
-  };
-}
-
-function createLogger(log) {
-  return {
-    debug: (...messages) => log.debug.push(format(messages)),
-    error: (...messages) => log.error.push(format(messages)),
-    info: (...messages) => log.info.push(format(messages)),
-    warn: (...messages) => log.warn.push(format(messages))
-  };
-}
-
-function clearLog(log) {
-  log.debug.length = 0;
-  log.error.length = 0;
-  log.info.length = 0;
-  log.warn.length = 0;
-}
-
-function format(messages) {
-  return messages.join(" ");
-}
-
-function createApi() {
-  return {
-    hap: {
-      Characteristic: {
-        Active: "Active",
-        Brightness: "Brightness",
-        FirmwareRevision: "FirmwareRevision",
-        Manufacturer: "Manufacturer",
-        Model: "Model",
-        Name: "Name",
-        On: "On",
-        RotationDirection: "RotationDirection",
-        RotationSpeed: "RotationSpeed",
-        SerialNumber: "SerialNumber"
-      },
-      HAPStatus: {
-        SERVICE_COMMUNICATION_FAILURE: -70402
-      },
-      HapStatusError: class HapStatusError extends Error {},
-      Service: {
-        AccessoryInformation: "AccessoryInformation",
-        Fanv2: "Fanv2",
-        Lightbulb: "Lightbulb"
-      },
-      uuid: {
-        generate: (value) => `uuid:${value}`
-      }
-    },
-    on: () => undefined,
-    platformAccessory: FakePlatformAccessory,
-    registerPlatformAccessories: () => undefined,
-    unregisterPlatformAccessories: () => undefined
-  };
-}
-
-class FakePlatformAccessory {
-  constructor(displayName, uuid) {
-    this.context = {};
-    this.displayName = displayName;
-    this.UUID = uuid;
-    this.services = new Map();
-    this.addService("AccessoryInformation");
-  }
-
-  addService(name) {
-    const service = new FakeService();
-    this.services.set(name, service);
-    return service;
-  }
-
-  getService(name) {
-    return this.services.get(name);
-  }
-}
-
-class FakeService {
-  constructor() {
-    this.characteristics = new Map();
-  }
-
-  getCharacteristic(name) {
-    if (!this.characteristics.has(name)) {
-      this.characteristics.set(name, new FakeCharacteristic());
-    }
-
-    return this.characteristics.get(name);
-  }
-
-  setCharacteristic(name, value) {
-    this.getCharacteristic(name).value = value;
-    return this;
-  }
-}
-
-class FakeCharacteristic {
-  onGet(handler) {
-    this.getHandler = handler;
-    return this;
-  }
-
-  onSet() {
-    return this;
-  }
-
-  setProps() {
-    return this;
-  }
-
-  updateValue(value) {
-    this.value = value;
-    return this;
-  }
-}
-
-async function flushPromises() {
-  await Promise.resolve();
-  await Promise.resolve();
-}

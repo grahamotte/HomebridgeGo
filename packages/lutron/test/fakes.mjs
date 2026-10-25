@@ -480,10 +480,8 @@ export function createPlatform({ config = {}, fake = new FakeBridge(), discovere
 
       return typeof discovered === "function" ? discovered() : discovered;
     },
-    timing: FAST_TIMING,
-    pressTiming: FAST_PRESS_TIMING,
-    pairingTimeoutMs: 5000,
-    ...options
+    ...options,
+    timing: { ...FAST_TIMING, ...FAST_PRESS_TIMING, pairingTimeoutMs: 5000, ...options.timing }
   });
   return { api, discoveries, fake, messages, platform, store, storagePath };
 }

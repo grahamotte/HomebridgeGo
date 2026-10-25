@@ -38,6 +38,8 @@ export interface ThermostatValues {
   readonly mode: VenstarMode;
   readonly fan: number;
   readonly useFahrenheit: boolean;
+  readonly heattemp: number;
+  readonly cooltemp: number;
   readonly currentTemperature: number;
   readonly heatTemperature: number;
   readonly coolTemperature: number;
@@ -171,6 +173,8 @@ export function mapVenstarToHomeKit(info: VenstarInfo): ThermostatValues {
     mode: info.mode,
     fan: info.fan,
     useFahrenheit,
+    heattemp: info.heattemp,
+    cooltemp: info.cooltemp,
     currentTemperature,
     heatTemperature,
     coolTemperature,
@@ -213,8 +217,10 @@ export function buildControlFromChange(
   return {
     mode,
     fan,
-    heattemp: fromHomeKitTemperature(heatTemperature, current.useFahrenheit),
-    cooltemp: fromHomeKitTemperature(coolTemperature, current.useFahrenheit),
+    // Unchanged setpoints are sent back exactly as the thermostat reported them, so a
+    // Celsius round trip cannot nudge them (76°F would otherwise come back as 75.99°F).
+    heattemp: heatTemperature === current.heatTemperature ? current.heattemp : fromHomeKitTemperature(heatTemperature, current.useFahrenheit),
+    cooltemp: coolTemperature === current.coolTemperature ? current.cooltemp : fromHomeKitTemperature(coolTemperature, current.useFahrenheit),
   };
 }
 

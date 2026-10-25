@@ -401,8 +401,10 @@ export function createApi() {
     platformAccessory: FakePlatformAccessory,
     registered: [],
     unregistered: [],
+    updated: [],
     registerPlatformAccessories: (_plugin, _platform, accessories) => api.registered.push(...accessories),
-    unregisterPlatformAccessories: (_plugin, _platform, accessories) => api.unregistered.push(...accessories)
+    unregisterPlatformAccessories: (_plugin, _platform, accessories) => api.unregistered.push(...accessories),
+    updatePlatformAccessories: (accessories) => api.updated.push(...accessories)
   };
   return api;
 }

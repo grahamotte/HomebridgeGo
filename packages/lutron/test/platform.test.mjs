@@ -87,7 +87,7 @@ describe("GoLutronPlatform", () => {
   });
 
   it("retries pairing on the next discovery when nobody presses the button", async () => {
-    const { fake, messages, platform } = createPlatform({ paired: false, pairingTimeoutMs: 10 });
+    const { fake, messages, platform } = createPlatform({ paired: false, timing: { pairingTimeoutMs: 10 } });
     await platform.refresh();
     assert.ok(messages.warn.includes(`Pairing with the bridge at ${BRIDGE_HOST} failed: the bridge button was not pressed in time. Will retry.`));
 
@@ -119,8 +119,8 @@ describe("GoLutronPlatform", () => {
     platform.stop();
   });
 
-  it("uses a configured host instead of mDNS", async () => {
-    const { api, discoveries, fake, platform } = createPlatform({ config: { host: " 192.168.1.80 " } });
+  it("uses configured hosts instead of mDNS", async () => {
+    const { api, discoveries, fake, platform } = createPlatform({ config: { hosts: [" 192.168.1.80 "] } });
     platform.start();
     await until(() => api.registered.length === 3);
 
@@ -130,7 +130,7 @@ describe("GoLutronPlatform", () => {
   });
 
   it("pairs a configured host that has no saved credentials", async () => {
-    const { fake, platform } = createPlatform({ config: { host: "lutron.lan" }, paired: false });
+    const { fake, platform } = createPlatform({ config: { hosts: ["lutron.lan"] }, paired: false });
     platform.start();
     await until(() => fake.open.some((socket) => socket.options.port === 8083));
 
@@ -138,17 +138,26 @@ describe("GoLutronPlatform", () => {
     platform.stop();
   });
 
+  it("still accepts the single host setting from older versions", async () => {
+    const { discoveries, fake, platform } = createPlatform({ config: { host: "192.168.1.81" } });
+    await platform.refresh();
+
+    assert.deepEqual(discoveries, []);
+    assert.equal(fake.options[0].host, "192.168.1.81");
+    platform.stop();
+  });
+
   it("logs bad hosts, failed discovery, and missing bridges once", async () => {
-    const { messages, platform } = createPlatform({ config: { host: "bad host!" }, discovered: new Error("no multicast"), paired: false });
+    const { messages, platform } = createPlatform({ config: { hosts: ["bad host!"] }, discovered: new Error("no multicast"), paired: false });
     await platform.refresh();
     await platform.refresh();
 
     assert.deepEqual(messages.error, ["Ignoring invalid host \"bad host!\"."]);
     assert.deepEqual(messages.warn, [
       "mDNS discovery failed: no multicast",
-      "No Lutron bridge found. Set host if mDNS is blocked on this network.",
-      "mDNS discovery failed: no multicast"
+      "No Lutron bridge found. Set hosts if mDNS is blocked on this network."
     ]);
+    assert.deepEqual(messages.debug, ["mDNS discovery failed: no multicast"]);
     platform.stop();
   });
 

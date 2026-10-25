@@ -1,14 +1,23 @@
-/**
- * This is the name of the platform that users will use to register the plugin in the Homebridge config.json
- */
 export const PLATFORM_NAME = "GoVenstar";
-
-/**
- * This must match the name of your plugin as defined the package.json `name` property
- */
 export const PLUGIN_NAME = "homebridge-go-venstar";
 
+export const SSDP_SEARCH_TARGET = "venstar:thermostat:ecp";
+
 // Thermostats can be slow to answer on busy Wi-Fi, so timeouts are generous.
-export const DISCOVERY_TIMEOUT_MS = 10000;
-export const REQUEST_TIMEOUT_MS = 15000;
-export const POLL_INTERVAL_MS = 30000;
+export interface Timing {
+  readonly discoveryIntervalMs: number;
+  readonly discoveryTimeoutMs: number;
+  readonly requestTimeoutMs: number;
+  readonly pollIntervalMs: number;
+  readonly cacheTtlMs: number;
+  readonly settleMs: number;
+}
+
+export const DEFAULT_TIMING: Timing = {
+  discoveryIntervalMs: 300000,
+  discoveryTimeoutMs: 10000,
+  requestTimeoutMs: 15000,
+  pollIntervalMs: 30000,
+  cacheTtlMs: 5000,
+  settleMs: 250
+};

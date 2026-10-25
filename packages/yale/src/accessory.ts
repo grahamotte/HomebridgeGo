@@ -1,14 +1,15 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
-import { describe, RequestCancelled, YaleLock, type LockSettings, type LockTiming } from "./lock.js";
+import { RequestCancelled, YaleLock, type LockSettings } from "./lock.js";
+import { describe, Reachability } from "./log.js";
 import type { GoYalePlatform } from "./platform.js";
 import type { LockStatus, StatusUpdate } from "./protocol.js";
+import { LOW_BATTERY_PERCENT, type Timing } from "./settings.js";
 
-const LOW_BATTERY_PERCENT = 20;
-
-export class YaleLockAccessory {
+export class LockAccessory {
   private readonly lock: YaleLock;
   private readonly mechanism: Service;
   private readonly battery: Service;
+  private readonly reachability: Reachability;
   private current: number;
   private target: number;
   private pollTimer?: ReturnType<typeof setInterval>;
@@ -19,16 +20,13 @@ export class YaleLockAccessory {
     private readonly platform: GoYalePlatform,
     private readonly accessory: PlatformAccessory,
     private readonly settings: LockSettings,
-    timing: LockTiming,
+    timing: Timing,
   ) {
     const { Characteristic, Service } = platform;
     this.current = Characteristic.LockCurrentState.UNKNOWN;
     this.target = Characteristic.LockTargetState.SECURED;
-    this.lock = new YaleLock(platform.bluez, settings, {
-      debug: (message) => platform.log.debug(message),
-      info: (message) => platform.log.info(message),
-      warn: (message) => platform.log.warn(message)
-    }, (update) => this.apply(update), timing);
+    this.reachability = new Reachability(platform.log, settings.name);
+    this.lock = new YaleLock(platform.bluez, settings, platform.log, (update) => this.apply(update), timing);
     this.mechanism = accessory.getService(Service.LockMechanism) ?? accessory.addService(Service.LockMechanism);
     this.battery = accessory.getService(Service.Battery) ?? accessory.addService(Service.Battery);
 
@@ -79,6 +77,7 @@ export class YaleLockAccessory {
   private refresh(): void {
     this.lock.refresh(() => !this.commandPending)
       .then((snapshot) => {
+        this.reachability.succeeded();
         this.apply({ kind: "lock", status: snapshot.lock });
         if (snapshot.battery !== undefined) {
           this.apply({ kind: "battery", voltage: 0, percentage: snapshot.battery });
@@ -90,7 +89,7 @@ export class YaleLockAccessory {
           return;
         }
 
-        this.platform.log.warn(`${this.settings.name}: refresh failed: ${describe(error)}`);
+        this.reachability.failed(error);
       });
   }
 
@@ -104,6 +103,7 @@ export class YaleLockAccessory {
     this.platform.log.info(`${this.settings.name}: ${locked ? "locking" : "unlocking"}`);
     this.lock.setLocked(locked, () => request === this.request && Date.now() < deadline)
       .then(() => {
+        this.reachability.succeeded();
         this.platform.log.info(`${this.settings.name}: ${locked ? "locked" : "unlocked"}`);
       })
       .catch((error: unknown) => {

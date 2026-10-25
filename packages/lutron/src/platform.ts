@@ -1,32 +1,15 @@
-import net from "node:net";
 import path from "node:path";
-import type {
-  API,
-  Characteristic,
-  DynamicPlatformPlugin,
-  Logging,
-  PlatformAccessory,
-  PlatformConfig,
-  Service
-} from "homebridge";
-import { ShadeAccessory } from "./accessory.js";
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from "homebridge";
 import { identify, LutronBridge, type Pico, type Shade } from "./bridge.js";
+import { parseConfig, type Settings } from "./config.js";
 import { discoverBridges, type DiscoveredBridge } from "./discovery.js";
-import { describe, type SocketFactory } from "./leap.js";
+import type { SocketFactory } from "./leap.js";
+import { describe } from "./log.js";
 import { pair } from "./pairing.js";
 import { PicoAccessory } from "./pico.js";
-import type { PressTiming } from "./press.js";
-import {
-  DEFAULT_PRESS_TIMING,
-  DEFAULT_TIMING,
-  DISCOVERY_INTERVAL_MS,
-  DISCOVERY_TIMEOUT_MS,
-  PAIRING_TIMEOUT_MS,
-  PLATFORM_NAME,
-  PLUGIN_NAME,
-  STORAGE_DIRECTORY,
-  type BridgeTiming
-} from "./settings.js";
+import { AccessoryRegistry } from "./registry.js";
+import { DEFAULT_TIMING, PLATFORM_NAME, PLUGIN_NAME, STORAGE_DIRECTORY, type Timing } from "./settings.js";
+import { ShadeAccessory } from "./shade.js";
 import { CredentialStore, type BridgeRecord } from "./store.js";
 
 interface Context {
@@ -39,26 +22,23 @@ export interface PlatformDependencies {
   readonly connect?: SocketFactory;
   readonly discover?: (timeoutMs: number) => Promise<DiscoveredBridge[]>;
   readonly storagePath?: string;
-  readonly timing?: Partial<BridgeTiming>;
-  readonly pressTiming?: Partial<PressTiming>;
-  readonly discoveryIntervalMs?: number;
-  readonly pairingTimeoutMs?: number;
+  readonly timing?: Partial<Timing>;
 }
 
 export class GoLutronPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
+  public readonly settings: Settings;
   public readonly store: CredentialStore;
-  private readonly accessories = new Map<string, PlatformAccessory>();
+  private readonly registry: AccessoryRegistry;
   private readonly controllers = new Map<string, ShadeAccessory>();
   private readonly picos = new Map<string, PicoAccessory>();
   private readonly bridges = new Map<string, LutronBridge>();
-  private readonly host?: string;
-  private readonly timing: BridgeTiming;
-  private readonly pressTiming: PressTiming;
+  private readonly timing: Timing;
   private refreshing?: Promise<void>;
   private refreshTimer?: ReturnType<typeof setInterval>;
   private stopped = false;
+  private reportedDiscoveryFailure = false;
   private reportedMissing = false;
 
   constructor(
@@ -70,13 +50,12 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
     this.timing = { ...DEFAULT_TIMING, ...dependencies.timing };
-    this.pressTiming = { ...DEFAULT_PRESS_TIMING, ...dependencies.pressTiming };
+    this.registry = new AccessoryRegistry(api, log, PLUGIN_NAME, PLATFORM_NAME);
     this.store = new CredentialStore(path.join(dependencies.storagePath ?? api.user.storagePath(), STORAGE_DIRECTORY));
-    const host = typeof config.host === "string" ? config.host.trim() : "";
-    if (host && (net.isIP(host) || /^[A-Za-z0-9.-]+$/u.test(host))) {
-      this.host = host;
-    } else if (host) {
-      this.log.error(`Ignoring invalid host ${JSON.stringify(config.host)}.`);
+    const { settings, problems } = parseConfig(config);
+    this.settings = settings;
+    for (const problem of problems) {
+      this.log.error(problem);
     }
 
     api.on("didFinishLaunching", () => this.start());
@@ -84,14 +63,14 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.accessories.set(accessory.UUID, accessory);
+    this.registry.configure(accessory);
   }
 
   start(): void {
     this.refresh().catch(() => undefined);
     this.refreshTimer = setInterval(() => {
       this.refresh().catch(() => undefined);
-    }, this.dependencies.discoveryIntervalMs ?? DISCOVERY_INTERVAL_MS);
+    }, this.timing.discoveryIntervalMs);
     this.refreshTimer.unref?.();
   }
 
@@ -125,8 +104,13 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
 
   private async findBridges(): Promise<void> {
     const discover = this.dependencies.discover ?? discoverBridges;
-    const discovered = this.host ? [] : await discover(DISCOVERY_TIMEOUT_MS).catch((error: unknown) => {
-      this.log.warn(`mDNS discovery failed: ${describe(error)}`);
+    const hosts = this.settings.hosts;
+    const discovered = hosts.length > 0 ? [] : await discover(this.timing.discoveryTimeoutMs).then((bridges) => {
+      this.reportedDiscoveryFailure = false;
+      return bridges;
+    }, (error: unknown) => {
+      this.log[this.reportedDiscoveryFailure ? "debug" : "warn"](`mDNS discovery failed: ${describe(error)}`);
+      this.reportedDiscoveryFailure = true;
       return [];
     });
     if (this.stopped) {
@@ -144,22 +128,25 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       }
     }
 
-    if (this.host) {
-      const record = records.find((candidate) => candidate.host === this.host) ?? (records.length === 1 ? records[0] : undefined);
+    for (const host of hosts) {
+      // With one bridge and one configured host, a changed address still points at the paired bridge.
+      const record = records.find((candidate) => candidate.host === host) ?? (records.length === 1 && hosts.length === 1 ? records[0] : undefined);
       if (record) {
-        this.ensureBridge(record.host === this.host ? record : this.saveHost(record, this.host));
+        this.ensureBridge(record.host === host ? record : this.saveHost(record, host));
       } else {
-        pairings.push(this.pairBridge(this.host));
+        pairings.push(this.pairBridge(host));
       }
-    } else {
+    }
+
+    if (hosts.length === 0) {
       for (const record of records) {
         this.ensureBridge(record);
       }
     }
 
-    const missing = discovered.length === 0 && records.length === 0 && !this.host;
+    const missing = discovered.length === 0 && records.length === 0 && hosts.length === 0;
     if (missing && !this.reportedMissing) {
-      this.log.warn("No Lutron bridge found. Set host if mDNS is blocked on this network.");
+      this.log.warn("No Lutron bridge found. Set hosts if mDNS is blocked on this network.");
     }
 
     this.reportedMissing = missing;
@@ -171,7 +158,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
     this.log.warn(`Found an unpaired Lutron bridge at ${host}. Press the small black button on the back of the bridge to pair.`);
     try {
       const credentials = await pair(host, {
-        timeoutMs: this.dependencies.pairingTimeoutMs ?? PAIRING_TIMEOUT_MS,
+        timeoutMs: this.timing.pairingTimeoutMs,
         requestTimeoutMs: this.timing.requestTimeoutMs,
         connect: this.dependencies.connect
       });
@@ -209,12 +196,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    const log = {
-      debug: (message: string) => this.log.debug(message),
-      info: (message: string) => this.log.info(message),
-      warn: (message: string) => this.log.warn(message)
-    };
-    const bridge: LutronBridge = new LutronBridge(record, log, {
+    const bridge: LutronBridge = new LutronBridge(record, this.log, {
       devices: (shades, picos) => this.syncDevices(bridge, shades, picos),
       level: (zone, level) => this.applyLevel(bridge.id, zone, level),
       button: (button, event) => this.applyButton(bridge.id, button, event),
@@ -225,14 +207,15 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       }
     }, this.dependencies.connect, this.timing);
     this.bridges.set(record.id, bridge);
-    for (const [uuid, accessory] of this.accessories) {
+    for (const accessory of this.registry.all()) {
+      const uuid = accessory.UUID;
       const context = accessory.context as Context;
       if (context.bridge === bridge.id && context.shade && !this.controllers.has(uuid)) {
         this.controllers.set(uuid, new ShadeAccessory(this, accessory, context.shade, bridge));
       }
 
       if (context.bridge === bridge.id && context.pico && !this.picos.has(uuid)) {
-        this.picos.set(uuid, new PicoAccessory(this, accessory, context.pico, this.pressTiming));
+        this.picos.set(uuid, new PicoAccessory(this, accessory, context.pico, this.timing));
       }
     }
 
@@ -243,7 +226,8 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
   private syncDevices(bridge: LutronBridge, shades: readonly Shade[], picos?: readonly Pico[]): void {
     const seen = new Set<string>();
     for (const shade of shades) {
-      const { uuid, accessory, cached } = this.accessoryFor(bridge, shade.serial, shade.name);
+      const accessory = this.accessoryFor(bridge, shade.serial, shade.name);
+      const uuid = accessory.UUID;
       seen.add(uuid);
       const context = accessory.context as Context;
       context.bridge = bridge.id;
@@ -255,11 +239,12 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
         this.controllers.set(uuid, new ShadeAccessory(this, accessory, shade, bridge));
       }
 
-      this.publish(accessory, cached, `shade ${shade.name}`);
+      this.registry.publish(accessory, `shade ${shade.name}`);
     }
 
     for (const pico of picos ?? []) {
-      const { uuid, accessory, cached } = this.accessoryFor(bridge, pico.serial, pico.name);
+      const accessory = this.accessoryFor(bridge, pico.serial, pico.name);
+      const uuid = accessory.UUID;
       seen.add(uuid);
       const context = accessory.context as Context;
       context.bridge = bridge.id;
@@ -268,46 +253,33 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       if (controller) {
         controller.update(pico);
       } else {
-        this.picos.set(uuid, new PicoAccessory(this, accessory, pico, this.pressTiming));
+        this.picos.set(uuid, new PicoAccessory(this, accessory, pico, this.timing));
       }
 
-      this.publish(accessory, cached, `Pico ${pico.name}`);
+      this.registry.publish(accessory, `Pico ${pico.name}`);
     }
 
-    for (const [uuid, accessory] of this.accessories) {
+    for (const accessory of this.registry.all()) {
+      const uuid = accessory.UUID;
       const context = accessory.context as Context;
       if (seen.has(uuid) || context.bridge !== bridge.id || (picos === undefined && context.pico)) {
         continue;
       }
 
-      this.log.warn(`Removing ${context.pico ? "Pico" : "shade"} ${accessory.displayName}; the bridge no longer reports it.`);
-      this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-      this.accessories.delete(uuid);
+      this.registry.remove(accessory, `${context.pico ? "Pico" : "shade"} ${accessory.displayName}`, "the bridge no longer reports it");
       this.controllers.delete(uuid);
       this.picos.get(uuid)?.reset();
       this.picos.delete(uuid);
     }
   }
 
-  private accessoryFor(bridge: LutronBridge, serial: string, name: string): { uuid: string; accessory: PlatformAccessory; cached: boolean } {
-    const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${bridge.id}:${serial}`);
-    const cached = this.accessories.get(uuid);
-    return { uuid, accessory: cached ?? new this.api.platformAccessory(name, uuid), cached: cached !== undefined };
-  }
-
-  private publish(accessory: PlatformAccessory, cached: boolean, label: string): void {
-    if (cached) {
-      this.api.updatePlatformAccessories([accessory]);
-    } else {
-      this.log.info(`Adding ${label}.`);
-      this.accessories.set(accessory.UUID, accessory);
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    }
+  private accessoryFor(bridge: LutronBridge, serial: string, name: string): PlatformAccessory {
+    return this.registry.obtain(this.registry.uuid(`${PLUGIN_NAME}:${bridge.id}:${serial}`), name);
   }
 
   private applyLevel(bridge: string, zone: string, level: number): void {
     for (const [uuid, controller] of this.controllers) {
-      if (controller.zone === zone && (this.accessories.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
+      if (controller.zone === zone && (this.registry.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
         controller.setLevel(level);
       }
     }
@@ -315,7 +287,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
 
   private applyButton(bridge: string, button: string, event: string): void {
     for (const [uuid, controller] of this.picos) {
-      if (controller.has(button) && (this.accessories.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
+      if (controller.has(button) && (this.registry.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
         controller.handle(button, event);
       }
     }
@@ -323,7 +295,7 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
 
   private resetPicos(bridge: string): void {
     for (const [uuid, controller] of this.picos) {
-      if ((this.accessories.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
+      if ((this.registry.get(uuid)?.context as Context | undefined)?.bridge === bridge) {
         controller.reset();
       }
     }

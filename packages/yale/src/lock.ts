@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Bluez, BluezDevice } from "./bluez.js";
+import { describe, type Log } from "./log.js";
 import {
   ackMatcher,
   buildCommand,
@@ -27,6 +28,7 @@ import {
   type LockStatus,
   type StatusUpdate
 } from "./protocol.js";
+import { DEFAULT_TIMING, type Timing } from "./settings.js";
 
 export interface LockSettings {
   readonly name: string;
@@ -35,38 +37,10 @@ export interface LockSettings {
   readonly slot: number;
 }
 
-export interface LockTiming {
-  readonly discoveryTimeoutMs: number;
-  readonly connectTimeoutMs: number;
-  readonly connectAttempts: number;
-  readonly responseTimeoutMs: number;
-  readonly ackTimeoutMs: number;
-  readonly operationTimeoutMs: number;
-  readonly cooldownMs: number;
-  readonly idleDisconnectMs: number;
-}
-
-export interface LockLogger {
-  debug(message: string): void;
-  info(message: string): void;
-  warn(message: string): void;
-}
-
 export interface LockSnapshot {
   readonly lock: LockStatus;
   readonly battery?: number;
 }
-
-export const DEFAULT_TIMING: LockTiming = {
-  discoveryTimeoutMs: 30000,
-  connectTimeoutMs: 120000,
-  connectAttempts: 4,
-  responseTimeoutMs: 10000,
-  ackTimeoutMs: 8000,
-  operationTimeoutMs: 12000,
-  cooldownMs: 250,
-  idleDisconnectMs: 30000
-};
 
 const OPERATION_ATTEMPTS = 3;
 const READ_ATTEMPTS = 2;
@@ -105,8 +79,8 @@ class LockConnection {
     private readonly device: BluezDevice,
     private readonly characteristics: Record<string, string>,
     private readonly settings: LockSettings,
-    private readonly timing: LockTiming,
-    private readonly log: LockLogger,
+    private readonly timing: Timing,
+    private readonly log: Log,
     private readonly onState: (update: StatusUpdate) => void,
     private readonly onClose: () => void,
   ) {
@@ -116,8 +90,8 @@ class LockConnection {
   static async open(
     device: BluezDevice,
     settings: LockSettings,
-    timing: LockTiming,
-    log: LockLogger,
+    timing: Timing,
+    log: Log,
     onState: (update: StatusUpdate) => void,
     onClose: () => void,
   ): Promise<LockConnection> {
@@ -351,9 +325,9 @@ export class YaleLock {
   constructor(
     private readonly bluez: Bluez,
     readonly settings: LockSettings,
-    private readonly log: LockLogger,
+    private readonly log: Log,
     private readonly onState: (update: StatusUpdate) => void,
-    private readonly timing: LockTiming = DEFAULT_TIMING,
+    private readonly timing: Timing = DEFAULT_TIMING,
   ) {}
 
   refresh(wanted: StillWanted = ALWAYS): Promise<LockSnapshot> {
@@ -453,7 +427,7 @@ export class YaleLock {
           }
         });
         this.connection = connection;
-        this.log.info(`${this.settings.name}: connected in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+        this.log.debug(`${this.settings.name}: connected in ${((Date.now() - started) / 1000).toFixed(1)}s`);
         return connection;
       } catch (error) {
         if (error instanceof LockError && !error.retryable) {
@@ -491,8 +465,4 @@ function requireWanted(wanted: StillWanted): void {
   if (!wanted()) {
     throw new RequestCancelled();
   }
-}
-
-export function describe(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

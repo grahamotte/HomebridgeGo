@@ -1,88 +1,47 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
+import type { Fan } from "./discovery.js";
+import { describe, Reachability } from "./log.js";
 import type { GoWacFansPlatform } from "./platform.js";
-import { POLL_INTERVAL_MS, REQUEST_TIMEOUT_MS } from "./settings.js";
-import { mapState, speedFromHomeKit, WacClient, WacError, type FanChange, type FanValues } from "./wac.js";
+import type { Timing } from "./settings.js";
+import { mapState, speedFromHomeKit, WacClient, type FanChange, type FanState, type FanValues } from "./wac.js";
 
-interface Device {
-  readonly clientId: string;
-  readonly host: string;
-  readonly mac: string;
-  readonly deviceName: string;
-  readonly fanType: string;
-  readonly firmwareVersion: string;
-  readonly lightType: string;
-}
-
-const CACHE_TTL_MS = 5000;
-
-export class WacFanAccessory {
-  private readonly client: WacClient;
+// HomeKit reads are answered from the last known state and refreshed in the background,
+// so a slow fan does not stall the Home app.
+export class FanAccessory {
   private readonly fan: Service;
   private readonly light?: Service;
+  private readonly reachability: Reachability;
+  private client: WacClient;
   private values?: FanValues;
-  private lastRefreshMs = 0;
-  private refreshPromise?: Promise<FanValues>;
+  private refreshedAt = 0;
+  private refreshing?: Promise<FanValues>;
   private pollTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly platform: GoWacFansPlatform,
     private readonly accessory: PlatformAccessory,
-    private readonly device: Device,
+    private device: Fan,
+    private readonly timing: Timing,
   ) {
-    this.client = new WacClient(device.host, REQUEST_TIMEOUT_MS);
-    this.fan =
-      accessory.getService(platform.Service.Fanv2) ??
-      accessory.addService(platform.Service.Fanv2);
-    this.light = device.lightType
-      ? accessory.getService(platform.Service.Lightbulb) ??
-        accessory.addService(platform.Service.Lightbulb)
-      : undefined;
-
+    const { Service } = platform;
+    this.client = new WacClient(device.host, timing.requestTimeoutMs);
+    this.reachability = new Reachability(platform.log, device.deviceName);
+    this.fan = accessory.getService(Service.Fanv2) ?? accessory.addService(Service.Fanv2);
+    this.light = device.lightType ? accessory.getService(Service.Lightbulb) ?? accessory.addService(Service.Lightbulb) : undefined;
     this.setInfo();
     this.bind();
-    this.startPolling();
-    this.refresh().catch((error: unknown) => this.logFailure(error));
-  }
-
-  private setInfo(): void {
-    this.accessory
-      .getService(this.platform.Service.AccessoryInformation)
-      ?.setCharacteristic(this.platform.Characteristic.Manufacturer, "WAC")
-      .setCharacteristic(this.platform.Characteristic.Model, this.device.fanType)
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, this.device.mac)
-      .setCharacteristic(this.platform.Characteristic.FirmwareRevision, this.device.firmwareVersion)
-      .setCharacteristic(this.platform.Characteristic.Name, this.device.deviceName);
-
-    this.fan.setCharacteristic(this.platform.Characteristic.Name, this.device.deviceName);
-    this.light?.setCharacteristic(this.platform.Characteristic.Name, `${this.device.deviceName} Light`);
-  }
-
-  private bind(): void {
-    this.fan.getCharacteristic(this.platform.Characteristic.Active)
-      .onGet(async () => (await this.get()).active)
-      .onSet((value) => this.setFanActive(value));
-    this.fan.getCharacteristic(this.platform.Characteristic.RotationSpeed)
-      .setProps({ minStep: 100 / 6 })
-      .onGet(async () => (await this.get()).speed)
-      .onSet((value) => this.setSpeed(value));
-    this.fan.getCharacteristic(this.platform.Characteristic.RotationDirection)
-      .onGet(async () => (await this.get()).direction)
-      .onSet((value) => this.set({ fanDirection: Number(value) === 1 ? "reverse" : "forward" }));
-
-    this.light?.getCharacteristic(this.platform.Characteristic.On)
-      .onGet(async () => (await this.get()).lightOn)
-      .onSet((value) => this.set({ lightOn: Boolean(value) }));
-    this.light?.getCharacteristic(this.platform.Characteristic.Brightness)
-      .onGet(async () => (await this.get()).brightness)
-      .onSet((value) => this.set({ lightOn: Number(value) > 0, lightBrightness: Number(value) }));
-  }
-
-  private startPolling(): void {
-    this.pollTimer = setInterval(() => {
-      this.refresh().catch((error: unknown) => this.logFailure(error));
-    }, POLL_INTERVAL_MS);
-
+    this.pollTimer = setInterval(() => this.poll(), timing.pollIntervalMs);
     this.pollTimer.unref?.();
+    this.poll();
+  }
+
+  update(device: Fan): void {
+    if (device.host !== this.device.host) {
+      this.client = new WacClient(device.host, this.timing.requestTimeoutMs);
+    }
+
+    this.device = device;
+    this.setInfo();
   }
 
   stop(): void {
@@ -92,45 +51,76 @@ export class WacFanAccessory {
     }
   }
 
-  private async get(): Promise<FanValues> {
+  private setInfo(): void {
+    const { Characteristic, Service } = this.platform;
+    this.accessory
+      .getService(Service.AccessoryInformation)
+      ?.setCharacteristic(Characteristic.Manufacturer, "WAC")
+      .setCharacteristic(Characteristic.Model, this.device.fanType)
+      .setCharacteristic(Characteristic.SerialNumber, this.device.mac)
+      .setCharacteristic(Characteristic.FirmwareRevision, this.device.firmwareVersion)
+      .setCharacteristic(Characteristic.Name, this.device.deviceName);
+    this.fan.setCharacteristic(Characteristic.Name, this.device.deviceName);
+    this.light?.setCharacteristic(Characteristic.Name, `${this.device.deviceName} Light`);
+  }
+
+  private bind(): void {
+    const { Characteristic } = this.platform;
+    this.fan.getCharacteristic(Characteristic.Active)
+      .onGet(async () => (await this.read()).active)
+      .onSet((value) => this.setActive(value));
+    this.fan.getCharacteristic(Characteristic.RotationSpeed)
+      .setProps({ minStep: 100 / 6 })
+      .onGet(async () => (await this.read()).speed)
+      .onSet((value) => this.setSpeed(value));
+    this.fan.getCharacteristic(Characteristic.RotationDirection)
+      .onGet(async () => (await this.read()).direction)
+      .onSet((value) => this.set({ fanDirection: Number(value) === 1 ? "reverse" : "forward" }));
+    this.light?.getCharacteristic(Characteristic.On)
+      .onGet(async () => (await this.read()).lightOn)
+      .onSet((value) => this.set({ lightOn: Boolean(value) }));
+    this.light?.getCharacteristic(Characteristic.Brightness)
+      .onGet(async () => (await this.read()).brightness)
+      .onSet((value) => this.set({ lightOn: Number(value) > 0, lightBrightness: Number(value) }));
+  }
+
+  private poll(): void {
+    this.refresh().catch(() => undefined);
+  }
+
+  private async read(): Promise<FanValues> {
     if (this.values) {
-      if (Date.now() - this.lastRefreshMs >= CACHE_TTL_MS) {
-        this.refresh().catch((error: unknown) => this.logFailure(error));
+      if (Date.now() - this.refreshedAt >= this.timing.cacheTtlMs) {
+        this.poll();
       }
+
       return this.values;
     }
 
     try {
       return await this.refresh();
-    } catch (error) {
-      throw this.toHapError(error);
+    } catch {
+      throw this.communicationFailure();
     }
   }
 
-  private async refresh(): Promise<FanValues> {
-    if (this.refreshPromise) {
-      return this.refreshPromise;
-    }
-
-    this.refreshPromise = this.client.getState()
-      .then((state) => {
-        const values = mapState(state);
-        this.values = values;
-        this.lastRefreshMs = Date.now();
-        this.update(values);
-        return values;
+  private refresh(): Promise<FanValues> {
+    this.refreshing ??= this.client.getState()
+      .then((state) => this.apply(state))
+      .catch((error: unknown) => {
+        this.reachability.failed(error);
+        throw error;
       })
       .finally(() => {
-        this.refreshPromise = undefined;
+        this.refreshing = undefined;
       });
-
-    return this.refreshPromise;
+    return this.refreshing;
   }
 
-  private async setFanActive(value: CharacteristicValue): Promise<void> {
+  private async setActive(value: CharacteristicValue): Promise<void> {
     const active = Number(value) === 1;
-    const current = await this.get();
-    await this.set({ fanOn: active, fanSpeed: active ? speedFromHomeKit(current.speed || 16.7) : undefined });
+    const speed = active ? speedFromHomeKit((await this.read()).speed || 100 / 6) : undefined;
+    await this.set({ fanOn: active, fanSpeed: speed });
   }
 
   private async setSpeed(value: CharacteristicValue): Promise<void> {
@@ -139,35 +129,41 @@ export class WacFanAccessory {
   }
 
   private async set(change: FanChange): Promise<void> {
+    this.platform.log.info(`${this.device.deviceName}: setting ${describeChange(change)}`);
     try {
-      this.platform.log.debug(`${this.device.deviceName}: ${JSON.stringify(change)}`);
-      const state = await this.client.set(change);
-      const values = mapState(state);
-      this.values = values;
-      this.lastRefreshMs = Date.now();
-      this.update(values);
+      this.apply(await this.client.set(change));
     } catch (error) {
-      throw this.toHapError(error);
+      if (!this.reachability.isDown) {
+        this.platform.log.warn(`${this.device.deviceName}: update failed: ${describe(error)}`);
+      }
+
+      throw this.communicationFailure();
     }
   }
 
-  private update(values: FanValues): void {
-    this.fan.getCharacteristic(this.platform.Characteristic.Active).updateValue(values.active);
-    this.fan.getCharacteristic(this.platform.Characteristic.RotationSpeed).updateValue(values.speed);
-    this.fan.getCharacteristic(this.platform.Characteristic.RotationDirection).updateValue(values.direction);
-    this.light?.getCharacteristic(this.platform.Characteristic.On).updateValue(values.lightOn);
-    this.light?.getCharacteristic(this.platform.Characteristic.Brightness).updateValue(values.brightness);
+  private apply(state: FanState): FanValues {
+    const { Characteristic } = this.platform;
+    const values = mapState(state);
+    this.values = values;
+    this.refreshedAt = Date.now();
+    this.reachability.succeeded();
+    this.fan.getCharacteristic(Characteristic.Active).updateValue(values.active);
+    this.fan.getCharacteristic(Characteristic.RotationSpeed).updateValue(values.speed);
+    this.fan.getCharacteristic(Characteristic.RotationDirection).updateValue(values.direction);
+    this.light?.getCharacteristic(Characteristic.On).updateValue(values.lightOn);
+    this.light?.getCharacteristic(Characteristic.Brightness).updateValue(values.brightness);
+    return values;
   }
 
-  private logFailure(error: unknown): void {
-    const message = error instanceof Error ? error.message : String(error);
-    this.platform.log.warn(`${this.device.deviceName}: ${message}`);
+  private communicationFailure(): Error {
+    const { HapStatusError, HAPStatus } = this.platform.api.hap;
+    return new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
   }
+}
 
-  private toHapError(error: unknown): Error {
-    this.logFailure(error);
-    return error instanceof WacError
-      ? new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE)
-      : error instanceof Error ? error : new Error(String(error));
-  }
+function describeChange(change: FanChange): string {
+  return Object.entries(change)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key} ${String(value)}`)
+    .join(", ");
 }

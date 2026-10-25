@@ -1,6 +1,6 @@
 import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge";
 import type { LutronBridge, Shade } from "./bridge.js";
-import { describe } from "./leap.js";
+import { describe } from "./log.js";
 import type { GoLutronPlatform } from "./platform.js";
 
 export class ShadeAccessory {

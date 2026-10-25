@@ -1,175 +1,179 @@
-import type {
-  API,
-  Characteristic,
-  DynamicPlatformPlugin,
-  Logging,
-  PlatformAccessory,
-  PlatformConfig,
-  Service
-} from "homebridge";
-import { discoverFans, type DiscoveredFan } from "./discovery.js";
-import { WacFanAccessory } from "./accessory.js";
-import { DISCOVERY_INTERVAL_MS, PLATFORM_NAME, PLUGIN_NAME, SCAN_TIMEOUT_MS } from "./settings.js";
-
-interface CachedDevice extends DiscoveredFan {
-  readonly lastSeen: string;
-  readonly unavailableSince?: string;
-}
+import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from "homebridge";
+import { FanAccessory } from "./accessory.js";
+import { parseConfig, type Settings } from "./config.js";
+import { browseFans, probeFans, subnetHosts, type Browse, type Fan } from "./discovery.js";
+import { describe } from "./log.js";
+import { AccessoryRegistry } from "./registry.js";
+import { DEFAULT_TIMING, PLATFORM_NAME, PLUGIN_NAME, type Timing } from "./settings.js";
 
 interface Context {
-  device?: CachedDevice;
+  device?: Fan;
+}
+
+export interface PlatformDependencies {
+  readonly browse?: Browse;
+  readonly subnet?: () => string[];
+  readonly timing?: Partial<Timing>;
 }
 
 export class GoWacFansPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
   public readonly Characteristic: typeof Characteristic;
-  public readonly accessories = new Map<string, PlatformAccessory>();
-  private readonly controllers = new Map<string, WacFanAccessory>();
-  private discoveryRunning = false;
-  private discoveryReported = false;
-  private discoveryTimer?: ReturnType<typeof setInterval>;
+  public readonly settings: Settings;
+  private readonly registry: AccessoryRegistry;
+  private readonly controllers = new Map<string, FanAccessory>();
+  private readonly timing: Timing;
+  private refreshing?: Promise<void>;
+  private refreshTimer?: ReturnType<typeof setInterval>;
+  private sweptAt = -Infinity;
+  private stopped = false;
+  private reportedBrowseFailure = false;
+  private reportedMissing = false;
 
   constructor(
     public readonly log: Logging,
     public readonly config: PlatformConfig,
     public readonly api: API,
+    private readonly dependencies: PlatformDependencies = {},
   ) {
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
+    this.timing = { ...DEFAULT_TIMING, ...dependencies.timing };
+    this.registry = new AccessoryRegistry(api, log, PLUGIN_NAME, PLATFORM_NAME);
+    const { settings, problems } = parseConfig(config);
+    this.settings = settings;
+    for (const problem of problems) {
+      this.log.error(problem);
+    }
 
-    api.on("didFinishLaunching", () => {
-      this.discoverDevices().catch((error: unknown) => {
-        this.log.error(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
-      this.startDiscoveryTimer();
-    });
+    api.on("didFinishLaunching", () => this.start());
+    api.on("shutdown", () => this.stop());
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    this.log.info("Loading accessory from cache:", accessory.displayName);
-    this.accessories.set(accessory.UUID, accessory);
+    this.registry.configure(accessory);
   }
 
-  async discoverDevices(): Promise<void> {
-    if (this.discoveryRunning) {
-      this.log.debug("Skipping WAC discovery; previous discovery is still running.");
-      return;
-    }
-
-    this.discoveryRunning = true;
-    const initialDiscovery = !this.discoveryReported;
-    this.logDiscovery("Discovering WAC fans...", initialDiscovery);
-    try {
-      const cachedHosts = [...this.accessories.values()]
-        .map((accessory) => (accessory.context as Context).device?.host)
-        .filter((host): host is string => Boolean(host));
-      const fans = await this.findFans(cachedHosts);
-
-      const changed = this.sync(fans, initialDiscovery);
-      this.logDiscovery(`WAC discovery finished: ${fans.length} fan(s) available.`, initialDiscovery || changed);
-      this.discoveryReported = true;
-    } finally {
-      this.discoveryRunning = false;
-    }
-  }
-
-  findFans(cachedHosts: readonly string[]): Promise<DiscoveredFan[]> {
-    return discoverFans(cachedHosts, SCAN_TIMEOUT_MS, true);
-  }
-
-  private startDiscoveryTimer(): void {
-    if (this.discoveryTimer) {
-      return;
-    }
-
-    this.discoveryTimer = setInterval(() => {
-      this.discoverDevices().catch((error: unknown) => {
-        this.log.error(`Discovery failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
-    }, DISCOVERY_INTERVAL_MS);
-
-    this.discoveryTimer.unref?.();
-  }
-
-  private sync(fans: readonly DiscoveredFan[], initialDiscovery: boolean): boolean {
-    const seen = new Set<string>();
-    const now = new Date().toISOString();
-    let changed = false;
-
-    for (const fan of fans) {
-      const uuid = this.api.hap.uuid.generate(fan.clientId);
-      const accessory = this.accessories.get(uuid) ?? new this.api.platformAccessory(fan.deviceName, uuid);
-      const cached = this.accessories.has(uuid);
-      const previous = (accessory.context as Context).device;
-      const wasUnavailable = Boolean(previous?.unavailableSince);
-      const deviceChanged = previous ? hasDeviceChanged(previous, fan) : false;
-      seen.add(uuid);
-      (accessory.context as Context).device = { ...fan, lastSeen: now };
-
-      if (!this.controllers.has(uuid) || deviceChanged || wasUnavailable) {
-        this.attach(uuid, accessory, fan);
-      }
-
-      if (!cached) {
-        this.log.info(`Adding fan ${fan.deviceName} at ${fan.host}.`);
-        this.accessories.set(uuid, accessory);
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-        changed = true;
-      } else if (initialDiscovery) {
-        this.log.info(`Restored fan ${fan.deviceName} at ${fan.host}.`);
-      } else if (wasUnavailable) {
-        this.log.info(`Fan ${fan.deviceName} is available again at ${fan.host}.`);
-        changed = true;
-      } else if (deviceChanged) {
-        this.log.info(`Updated fan ${fan.deviceName} at ${fan.host}.`);
-        changed = true;
-      }
-    }
-
-    for (const [uuid, accessory] of this.accessories) {
-      if (seen.has(uuid)) {
-        continue;
-      }
-
+  start(): void {
+    // Cached fans answer HomeKit straight away; discovery then updates their addresses.
+    for (const accessory of this.registry.all()) {
       const device = (accessory.context as Context).device;
-      if (!device) {
-        continue;
-      }
-
-      if (!device.unavailableSince) {
-        this.log.warn(`Keeping cached fan ${accessory.displayName}; it was not discovered this run.`);
-        (accessory.context as Context).device = { ...device, unavailableSince: now };
-        changed = true;
-      }
-
-      if (!this.controllers.has(uuid)) {
-        this.attach(uuid, accessory, device);
+      if (device) {
+        this.attach(accessory, device);
       }
     }
 
-    return changed;
+    this.refresh().catch(() => undefined);
+    this.refreshTimer = setInterval(() => {
+      this.refresh().catch(() => undefined);
+    }, this.timing.discoveryIntervalMs);
+    this.refreshTimer.unref?.();
   }
 
-  private attach(uuid: string, accessory: PlatformAccessory, fan: DiscoveredFan): void {
-    this.controllers.get(uuid)?.stop();
-    this.controllers.set(uuid, new WacFanAccessory(this, accessory, fan));
+  stop(): void {
+    this.stopped = true;
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
+
+    for (const controller of this.controllers.values()) {
+      controller.stop();
+    }
+
+    this.controllers.clear();
   }
 
-  private logDiscovery(message: string, important: boolean): void {
-    if (important) {
-      this.log.info(message);
+  refresh(): Promise<void> {
+    this.refreshing ??= this.discover()
+      .catch((error: unknown) => {
+        this.log.error(`Fan discovery failed: ${describe(error)}`);
+      })
+      .finally(() => {
+        this.refreshing = undefined;
+      });
+    return this.refreshing;
+  }
+
+  private async discover(): Promise<void> {
+    const browse = this.dependencies.browse ?? browseFans;
+    const advertised = await browse(this.timing.discoveryTimeoutMs).then((hosts) => {
+      this.reportedBrowseFailure = false;
+      return hosts;
+    }, (error: unknown) => {
+      this.log[this.reportedBrowseFailure ? "debug" : "warn"](`Bonjour discovery failed: ${describe(error)}`);
+      this.reportedBrowseFailure = true;
+      return [];
+    });
+    const cached = this.cachedFans();
+    const found = await probeFans([...advertised, ...this.settings.hosts, ...cached.map((fan) => fan.host)], this.timing.discoveryTimeoutMs);
+
+    // Bonjour is unreliable on some networks, so when a known fan is missing, or none is known yet,
+    // probe every local address. The sweep is slow, so it runs at most once per sweep interval.
+    const missing = cached.filter((fan) => !found.some((candidate) => candidate.clientId === fan.clientId));
+    const now = Date.now();
+    if ((missing.length > 0 || (cached.length === 0 && found.length === 0)) && now - this.sweptAt >= this.timing.sweepIntervalMs) {
+      this.sweptAt = now;
+      const hosts = (this.dependencies.subnet ?? subnetHosts)();
+      this.log.debug(`Probing ${hosts.length} local addresses for fans.`);
+      for (const fan of await probeFans(hosts, this.timing.discoveryTimeoutMs)) {
+        if (!found.some((candidate) => candidate.clientId === fan.clientId)) {
+          found.push(fan);
+        }
+      }
+    }
+
+    if (this.stopped) {
+      return;
+    }
+
+    for (const fan of found) {
+      this.sync(fan);
+    }
+
+    const none = found.length === 0 && this.registry.all().length === 0;
+    if (none && !this.reportedMissing) {
+      this.log.warn("No WAC fan found. Set hosts if the fans are on another network.");
+    }
+
+    this.reportedMissing = none;
+  }
+
+  private cachedFans(): Fan[] {
+    return this.registry.all().flatMap((accessory) => {
+      const device = (accessory.context as Context).device;
+      return device ? [device] : [];
+    });
+  }
+
+  private sync(fan: Fan): void {
+    const accessory = this.registry.obtain(this.registry.uuid(fan.clientId), fan.deviceName);
+    const context = accessory.context as Context;
+    const previous = context.device;
+    const device: Fan = {
+      clientId: fan.clientId,
+      host: fan.host,
+      mac: fan.mac,
+      deviceName: fan.deviceName,
+      fanType: fan.fanType,
+      firmwareVersion: fan.firmwareVersion,
+      lightType: fan.lightType
+    };
+    context.device = device;
+    if (previous && previous.host !== device.host) {
+      this.log.info(`${device.deviceName} moved from ${previous.host} to ${device.host}.`);
+    }
+
+    this.attach(accessory, device);
+    this.registry.publish(accessory, `fan ${device.deviceName} at ${device.host}`);
+  }
+
+  private attach(accessory: PlatformAccessory, device: Fan): void {
+    const controller = this.controllers.get(accessory.UUID);
+    if (controller) {
+      controller.update(device);
     } else {
-      this.log.debug(message);
+      this.controllers.set(accessory.UUID, new FanAccessory(this, accessory, device, this.timing));
     }
   }
-}
-
-function hasDeviceChanged(previous: CachedDevice, fan: DiscoveredFan): boolean {
-  return previous.clientId !== fan.clientId ||
-    previous.host !== fan.host ||
-    previous.mac !== fan.mac ||
-    previous.deviceName !== fan.deviceName ||
-    previous.fanType !== fan.fanType ||
-    previous.firmwareVersion !== fan.firmwareVersion ||
-    previous.lightType !== fan.lightType;
 }
