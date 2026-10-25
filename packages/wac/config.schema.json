@@ -1,0 +1,10 @@
+{
+  "pluginAlias": "GoWacFans",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Fans are discovered automatically. There are no settings.",
+  "schema": {
+    "type": "object",
+    "properties": {}
+  }
+}
