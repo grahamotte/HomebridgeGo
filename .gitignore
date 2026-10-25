@@ -7,3 +7,5 @@ coverage
 .DS_Store
 packages/*/test/hbConfig/*
 !packages/*/test/hbConfig/config.json
+.env
+.env.*

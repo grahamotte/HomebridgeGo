@@ -30,7 +30,26 @@ if [ ! -f "packages/${usage_package}/package.json" ]; then
 fi
 npm run validate
 mise run check-clean
-npm publish --workspace "packages/${usage_package}"
+# Publish with NPM_TOKEN, from the environment or the .env files `mr secrets` writes, through a
+# throwaway userconfig so the token never lands in ~/.npmrc. Without a token, npm asks you to log in.
+token="${NPM_TOKEN:-}"
+if [ -z "${token}" ]; then
+  token="$(grep -h '^NPM_TOKEN=' .env .env.* 2>/dev/null | head -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true)"
+fi
+if [ -z "${token}" ]; then
+  npm publish --workspace "packages/${usage_package}"
+  exit 0
+fi
+userconfig="$(mktemp)"
+trap 'rm -f "${userconfig}"' EXIT
+chmod 600 "${userconfig}"
+printf '//registry.npmjs.org/:_authToken=%s\n' "${token}" > "${userconfig}"
+if ! user="$(npm whoami --userconfig "${userconfig}" 2>/dev/null)"; then
+  echo "NPM_TOKEN was rejected by npm; create a new token and store it with mr secrets set NPM_TOKEN" >&2
+  exit 1
+fi
+echo "Publishing packages/${usage_package} as ${user}"
+npm publish --workspace "packages/${usage_package}" --userconfig "${userconfig}"
 '''
 
 [tasks.push]
