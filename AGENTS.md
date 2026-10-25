@@ -13,7 +13,7 @@ This repository holds four Homebridge plugins as npm workspaces, each published 
 
 Never rename an npm package or a plugin's platform name: Homebridge keys installed configs and cached accessories on them.
 
-Shared tooling lives at the root: `package.json` (devDependencies and the single `package-lock.json`), `eslint.config.js`, `tsconfig.base.json` (each package's `tsconfig.json` extends it), and `mise.toml`. Run `mise test` before every PR; it lints, builds, tests, and pack-checks every package. Publish one package with `mise publish PACKAGE`, such as `mise publish venstar`, after bumping its version. It publishes from this machine with `NPM_TOKEN`, an npm granular access token stored in the project's 1Password item with `mr secrets set NPM_TOKEN`; without one, npm asks for an interactive login.
+Shared tooling lives at the root: `package.json` (devDependencies and the single `package-lock.json`), `eslint.config.js`, `tsconfig.base.json` (each package's `tsconfig.json` extends it), and `mise.toml`. Run `mise test` before every PR; it lints, builds, tests, and pack-checks every package. After bumping versions, run `mise publish` in a terminal: it pushes main, validates, and publishes every plugin whose version is not on npm yet, with npm's browser login and passkey prompts inline. `mise publish venstar` publishes just one.
 
 ## Plugin conventions
 

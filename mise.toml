@@ -19,38 +19,10 @@ fi
 '''
 
 [tasks.publish]
-description = "Push, validate, and publish one plugin package to npm"
-usage = 'arg "<package>" help="Plugin directory under packages/: lutron, venstar, wac, or yale"'
+description = "Push main, then publish every plugin, or the named ones, whose version is not on npm yet"
+usage = 'arg "[package]" var=#true help="Plugin directories under packages/: lutron, venstar, wac, or yale. Default: all"'
 depends = ["push"]
-run = '''
-set -euo pipefail
-if [ ! -f "packages/${usage_package}/package.json" ]; then
-  echo "Unknown package: ${usage_package}" >&2
-  exit 1
-fi
-npm run validate
-mise run check-clean
-# Publish with NPM_TOKEN, from the environment or the .env files `mr secrets` writes, through a
-# throwaway userconfig so the token never lands in ~/.npmrc. Without a token, npm asks you to log in.
-token="${NPM_TOKEN:-}"
-if [ -z "${token}" ]; then
-  token="$(grep -h '^NPM_TOKEN=' .env .env.* 2>/dev/null | head -n 1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$//' || true)"
-fi
-if [ -z "${token}" ]; then
-  npm publish --workspace "packages/${usage_package}"
-  exit 0
-fi
-userconfig="$(mktemp)"
-trap 'rm -f "${userconfig}"' EXIT
-chmod 600 "${userconfig}"
-printf '//registry.npmjs.org/:_authToken=%s\n' "${token}" > "${userconfig}"
-if ! user="$(npm whoami --userconfig "${userconfig}" 2>/dev/null)"; then
-  echo "NPM_TOKEN was rejected by npm; create a new token and store it with mr secrets set NPM_TOKEN" >&2
-  exit 1
-fi
-echo "Publishing packages/${usage_package} as ${user}"
-npm publish --workspace "packages/${usage_package}" --userconfig "${userconfig}"
-'''
+run = 'scripts/publish.sh ${usage_package:-}'
 
 [tasks.push]
 description = "Fetch and safely push main to origin"
