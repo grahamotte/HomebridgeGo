@@ -122,11 +122,11 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
     const records = this.store.list();
     const pairings: Promise<void>[] = [];
     for (const bridge of discovered) {
-      const record = records.find((candidate) => candidate.id === bridge.id);
+      const record = records.find((candidate) => sameBridge(candidate.id, bridge.id));
       if (record) {
         this.ensureBridge(record.host === bridge.host ? record : this.saveHost(record, bridge.host));
       } else {
-        pairings.push(this.pairBridge(bridge.host));
+        pairings.push(this.pairBridge(bridge.host, bridge.id));
       }
     }
 
@@ -156,7 +156,9 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
     await Promise.all(pairings);
   }
 
-  private async pairBridge(host: string): Promise<void> {
+  // A discovered bridge must report the serial its mDNS name advertised, and pairing never replaces a saved bridge,
+  // so another device on the network cannot complete pairing in a real bridge's place.
+  private async pairBridge(host: string, expectedId?: string): Promise<void> {
     this.log.warn(`Found an unpaired Lutron bridge at ${host}. Press the small black button on the back of the bridge to pair.`);
     try {
       const credentials = await pair(host, {
@@ -166,6 +168,14 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
         signal: this.pairing.signal
       });
       const id = await identify(host, credentials, this.dependencies.connect, this.timing.requestTimeoutMs);
+      if (expectedId !== undefined && !sameBridge(id, expectedId)) {
+        throw new Error(`it reported serial ${id} but advertised ${expectedId}`);
+      }
+
+      if (this.store.list().some((record) => sameBridge(record.id, id))) {
+        throw new Error(`bridge ${id} is already paired; delete its file in ${this.store.directory} to pair it again`);
+      }
+
       const record = { id, host, ...credentials };
       this.store.save(record);
       this.log.info(`Paired with bridge ${id} at ${host}.`);
@@ -305,4 +315,8 @@ export class GoLutronPlatform implements DynamicPlatformPlugin {
       }
     }
   }
+}
+
+function sameBridge(a: string, b: string): boolean {
+  return a.replace(/^0+/u, "") === b.replace(/^0+/u, "");
 }
