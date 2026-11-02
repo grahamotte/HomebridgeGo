@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BRIDGE_HOST, BRIDGE_ID, createPlatform, FakeBridge, FakePlatformAccessory, settle, until } from "./fakes.mjs";
+import { BRIDGE_HOST, BRIDGE_ID, createPlatform, CREDENTIALS, FakeBridge, FakePlatformAccessory, settle, until } from "./fakes.mjs";
 
 const LIVING = `uuid:homebridge-go-lutron:${BRIDGE_ID}:79430373`;
 const MASTER = `uuid:homebridge-go-lutron:${BRIDGE_ID}:70492003`;
@@ -82,6 +82,31 @@ describe("GoLutronPlatform", () => {
     assert.match(record.key, /BEGIN PRIVATE KEY/u);
     assert.ok(messages.info.includes(`Paired with bridge ${BRIDGE_ID} at ${BRIDGE_HOST}.`));
     assert.equal(fake.options.at(-1).cert, "SIGNED CERT");
+    platform.stop();
+  });
+
+  it("refuses a bridge whose serial does not match its mDNS name", async () => {
+    const { api, fake, messages, platform, store } = createPlatform({ discovered: [{ id: "0BADBEEF", host: BRIDGE_HOST }], paired: false });
+    const pairing = platform.refresh();
+    await until(() => fake.open.some((socket) => socket.options.port === 8083));
+    fake.pressButton();
+    await pairing;
+
+    assert.deepEqual(store.list(), []);
+    assert.deepEqual(api.registered, []);
+    assert.ok(messages.warn.includes(`Pairing with the bridge at ${BRIDGE_HOST} failed: it reported serial ${BRIDGE_ID} but advertised 0BADBEEF. Will retry.`));
+    platform.stop();
+  });
+
+  it("never replaces the credentials of a paired bridge", async () => {
+    const { fake, messages, platform, store } = createPlatform({ config: { hosts: ["192.168.1.90", "192.168.1.91"] } });
+    const pairing = platform.refresh();
+    await until(() => fake.open.filter((socket) => socket.options.port === 8083).length === 2);
+    fake.pressButton();
+    await pairing;
+
+    assert.deepEqual(store.list(), [{ id: BRIDGE_ID, host: BRIDGE_HOST, ...CREDENTIALS }]);
+    assert.ok(messages.warn.some((message) => message.startsWith(`Pairing with the bridge at 192.168.1.90 failed: bridge ${BRIDGE_ID} is already paired;`)));
     platform.stop();
   });
 

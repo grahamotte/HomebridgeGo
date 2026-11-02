@@ -29,6 +29,9 @@ Add the platform. There are no required settings.
 When Homebridge finds a bridge it has not paired with, it logs a message asking you to press the
 small black button on the back of the bridge. Press it within three minutes. The plugin saves the
 bridge certificate under the Homebridge storage path in `go-lutron/` and does not ask again.
+Pairing only completes when the bridge reports the same serial number it advertises, and it never
+replaces a bridge that is already paired. To pair a bridge again, for example after a factory reset,
+delete its file in `go-lutron/` and restart Homebridge.
 
 ## Options
 
