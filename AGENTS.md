@@ -1,6 +1,6 @@
 # AGENTS
 
-For card work, use Mr. Moto's `mr` CLI: run `mr card claim <CARD>` and follow its output, and see `mr --help` for the rest.
+Every change to this repository needs a Mr. Moto card and a PR. Before editing, run Mr. Moto's `mr card claim <CARD>`, or `mr card claim --title T --body-file F` to create and claim a card when there is none, and follow its output; see `mr --help` for the rest.
 
 This repository holds four Homebridge plugins as npm workspaces, each published to npm under its own name:
 
