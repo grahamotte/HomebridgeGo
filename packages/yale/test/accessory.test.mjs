@@ -17,9 +17,10 @@ async function createAccessory(fakeLock = new FakeLock(), config = {}) {
   const accessory = api.registered[0];
   const mechanism = accessory.getService("LockMechanism");
   const battery = accessory.getService("Battery");
+  const contact = accessory.getService("ContactSensor")?.getCharacteristic({ name: "ContactSensorState" });
   const current = mechanism.getCharacteristic({ name: "LockCurrentState" });
   const target = mechanism.getCharacteristic({ name: "LockTargetState" });
-  return { accessory, battery, bus, current, fakeLock, messages, platform, target };
+  return { accessory, battery, bus, contact, current, fakeLock, messages, platform, target };
 }
 
 describe("LockAccessory", () => {
@@ -93,6 +94,58 @@ describe("LockAccessory", () => {
     await until(() => current.value === 2);
     assert.equal(target.value, 0);
     await platform.stop();
+  });
+
+  it("has no door sensor unless it is enabled", async () => {
+    const { accessory, contact, current, fakeLock, platform } = await createAccessory();
+    await until(() => current.value === 1);
+
+    assert.equal(contact, undefined);
+    assert.equal(accessory.getService("ContactSensor"), undefined);
+    assert.equal(fakeLock.commands.includes("2:46"), false);
+    await platform.stop();
+  });
+
+  it("shows the door as a contact sensor and follows pushes", async () => {
+    const fakeLock = new FakeLock();
+    fakeLock.door = "ajar";
+    const { accessory, bus, contact, current, platform } = await createAccessory(fakeLock, {
+      keepConnected: true,
+      locks: [{ name: "Front Door", address: ADDRESS, key: KEY, slot: SLOT, doorSensor: true }]
+    });
+    assert.equal(accessory.getService("ContactSensor").getCharacteristic({ name: "Name" }).value, "Front Door Door");
+    assert.throws(() => contact.getHandler(), (error) => error.hapStatus === -70402);
+
+    await until(() => contact.value !== undefined);
+    assert.equal(contact.value, 1);
+    assert.equal(contact.getHandler(), 1);
+    assert.equal(current.value, 1);
+
+    bus.pushDoor("closed");
+    await until(() => contact.value === 0);
+    bus.pushDoor("opened");
+    await until(() => contact.value === 1);
+    await platform.stop();
+  });
+
+  it("removes a cached door sensor once it is turned off", async () => {
+    const { accessory, platform } = await createAccessory(new FakeLock(), {
+      locks: [{ name: "Front Door", address: ADDRESS, key: KEY, slot: SLOT, doorSensor: true }]
+    });
+    assert.ok(accessory.getService("ContactSensor"));
+    await platform.stop();
+
+    const api = createApi();
+    const logger = createLog().logger;
+    const reloaded = new GoYalePlatform(logger, {
+      platform: "GoYale",
+      locks: [{ name: "Front Door", address: ADDRESS, key: KEY, slot: SLOT }],
+      pollIntervalSeconds: 0
+    }, api, { createBus: () => new FakeBus(new FakeLock()), timing: FAST_TIMING });
+    reloaded.configureAccessory(accessory);
+    api.emit("didFinishLaunching");
+    assert.equal(accessory.getService("ContactSensor"), undefined);
+    await reloaded.stop();
   });
 
   it("runs only the latest request", async () => {

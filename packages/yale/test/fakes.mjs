@@ -16,12 +16,14 @@ const CHARACTERISTICS = {
   "bd4ac614-0b45-11e3-8ffd-0800200c9a66": `${DEVICE}/service0010/char0018`
 };
 const STATUS_CODES = { unlocked: 0x03, locked: 0x05, jammed: 0x07 };
+const DOOR_CODES = { closed: 0x01, ajar: 0x02, opened: 0x03 };
 
 export class FakeLock {
   constructor({ key = KEY, slot = SLOT } = {}) {
     this.key = Buffer.from(key, "hex");
     this.slot = slot;
     this.status = "locked";
+    this.door = "closed";
     this.batteryMillivolts = 6000;
     this.operationResult = 0;
     this.dropAck = false;
@@ -92,6 +94,8 @@ export class FakeLock {
       const reply = this.reply(0xbb, opcode, type);
       if (type === 0x0f) {
         reply.writeUInt16LE(this.batteryMillivolts, 8);
+      } else if (type === 0x2e) {
+        reply[8] = DOOR_CODES[this.door] ?? 0;
       } else {
         reply[8] = STATUS_CODES[this.status];
       }
@@ -118,6 +122,13 @@ export class FakeLock {
     this.status = status;
     const reply = this.reply(0xbb, 0x02, 0x02);
     reply[8] = STATUS_CODES[status];
+    return this.encrypt(reply);
+  }
+
+  pushDoor(door) {
+    this.door = door;
+    const reply = this.reply(0xbb, 0x02, 0x2e);
+    reply[8] = DOOR_CODES[door] ?? 0;
     return this.encrypt(reply);
   }
 
@@ -267,6 +278,10 @@ export class FakeBus extends EventEmitter {
     this.notify(CHARACTERISTICS["bd4ac612-0b45-11e3-8ffd-0800200c9a66"], this.lock.push(status));
   }
 
+  pushDoor(door) {
+    this.notify(CHARACTERISTICS["bd4ac612-0b45-11e3-8ffd-0800200c9a66"], this.lock.pushDoor(door));
+  }
+
   property(path, name) {
     if (path === DEVICE && name === "Connected") {
       return this.connected;
@@ -377,6 +392,7 @@ export function createApi() {
       Characteristic: {
         BatteryLevel: { name: "BatteryLevel" },
         ChargingState: { name: "ChargingState", NOT_CHARGEABLE: 2 },
+        ContactSensorState: { name: "ContactSensorState", CONTACT_DETECTED: 0, CONTACT_NOT_DETECTED: 1 },
         LockCurrentState: { name: "LockCurrentState", UNSECURED: 0, SECURED: 1, JAMMED: 2, UNKNOWN: 3 },
         LockTargetState: { name: "LockTargetState", UNSECURED: 0, SECURED: 1 },
         Manufacturer: { name: "Manufacturer" },
@@ -388,7 +404,15 @@ export function createApi() {
       Service: {
         AccessoryInformation: "AccessoryInformation",
         Battery: "Battery",
+        ContactSensor: "ContactSensor",
         LockMechanism: "LockMechanism"
+      },
+      HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 },
+      HapStatusError: class HapStatusError extends Error {
+        constructor(status) {
+          super(`HAP status ${status}`);
+          this.hapStatus = status;
+        }
       },
       uuid: {
         generate: (value) => `uuid:${value}`
@@ -426,6 +450,14 @@ export class FakePlatformAccessory {
 
   getService(name) {
     return this.services.get(name);
+  }
+
+  removeService(service) {
+    for (const [name, existing] of this.services) {
+      if (existing === service) {
+        this.services.delete(name);
+      }
+    }
   }
 }
 

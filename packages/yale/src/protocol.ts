@@ -92,6 +92,10 @@ const AA_BATTERY_VOLTAGES: readonly (readonly [number, number])[] = [
   [1.55, 100]
 ];
 
+// The lock reports the whole pack, four AA cells in series. A reading below this cannot come from a pack that
+// is powering a working lock, so it is a misread frame rather than an empty battery.
+export const MIN_PACK_VOLTAGE = 3;
+
 export type StatusUpdate =
   | { readonly kind: "lock"; readonly status: LockStatus }
   | { readonly kind: "door"; readonly status: DoorStatus }
@@ -253,7 +257,9 @@ export function parseStatusFrame(frame: Buffer): StatusUpdate | undefined {
       return { kind: "lock", status: parseLockStatus(frame[0x08] ?? 0) };
     case StatusType.Battery: {
       const voltage = frame.readUInt16LE(0x08) / 1000;
-      return { kind: "battery", voltage, percentage: batteryPercentage(voltage / 4) };
+      return voltage < MIN_PACK_VOLTAGE
+        ? undefined
+        : { kind: "battery", voltage, percentage: batteryPercentage(voltage / 4) };
     }
     default:
       return undefined;

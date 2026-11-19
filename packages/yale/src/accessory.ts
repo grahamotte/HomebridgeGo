@@ -2,16 +2,18 @@ import type { CharacteristicValue, PlatformAccessory, Service } from "homebridge
 import { RequestCancelled, YaleLock, type LockSettings } from "./lock.js";
 import { describe, Reachability } from "./log.js";
 import type { GoYalePlatform } from "./platform.js";
-import type { LockStatus, StatusUpdate } from "./protocol.js";
+import type { DoorStatus, LockStatus, StatusUpdate } from "./protocol.js";
 import { LOW_BATTERY_PERCENT, type Timing } from "./settings.js";
 
 export class LockAccessory {
   private readonly lock: YaleLock;
   private readonly mechanism: Service;
   private readonly battery: Service;
+  private readonly contact?: Service;
   private readonly reachability: Reachability;
   private current: number;
   private target: number;
+  private door?: number;
   private pollTimer?: ReturnType<typeof setInterval>;
   private request = 0;
   private commandPending = false;
@@ -29,6 +31,7 @@ export class LockAccessory {
     this.lock = new YaleLock(platform.bluez, settings, platform.log, (update) => this.apply(update), timing);
     this.mechanism = accessory.getService(Service.LockMechanism) ?? accessory.addService(Service.LockMechanism);
     this.battery = accessory.getService(Service.Battery) ?? accessory.addService(Service.Battery);
+    this.contact = this.doorService();
 
     this.setInfo();
     this.bind();
@@ -55,6 +58,22 @@ export class LockAccessory {
       .setCharacteristic(Characteristic.Name, this.settings.name);
     this.mechanism.setCharacteristic(Characteristic.Name, this.settings.name);
     this.battery.setCharacteristic(Characteristic.ChargingState, Characteristic.ChargingState.NOT_CHARGEABLE);
+    this.contact?.setCharacteristic(Characteristic.Name, `${this.settings.name} Door`);
+  }
+
+  // The door sensor is opt-in, because a lock without one never answers the door query.
+  private doorService(): Service | undefined {
+    const { Service } = this.platform;
+    const existing = this.accessory.getService(Service.ContactSensor);
+    if (!this.settings.doorSensor) {
+      if (existing) {
+        this.accessory.removeService(existing);
+      }
+
+      return undefined;
+    }
+
+    return existing ?? this.accessory.addService(Service.ContactSensor, `${this.settings.name} Door`);
   }
 
   private bind(): void {
@@ -63,6 +82,14 @@ export class LockAccessory {
     this.mechanism.getCharacteristic(Characteristic.LockTargetState)
       .onGet(() => this.target)
       .onSet((value) => this.setTarget(value));
+    this.contact?.getCharacteristic(Characteristic.ContactSensorState).onGet(() => {
+      if (this.door === undefined) {
+        const { hap } = this.platform.api;
+        throw new hap.HapStatusError(hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      }
+
+      return this.door;
+    });
   }
 
   private startPolling(): void {
@@ -81,6 +108,10 @@ export class LockAccessory {
         this.apply({ kind: "lock", status: snapshot.lock });
         if (snapshot.battery !== undefined) {
           this.apply({ kind: "battery", voltage: 0, percentage: snapshot.battery });
+        }
+
+        if (snapshot.door !== undefined) {
+          this.apply({ kind: "door", status: snapshot.door });
         }
       })
       .catch((error: unknown) => {
@@ -151,6 +182,11 @@ export class LockAccessory {
       return;
     }
 
+    if (update.kind === "door") {
+      this.applyDoor(update.status);
+      return;
+    }
+
     if (update.kind !== "lock") {
       return;
     }
@@ -168,6 +204,18 @@ export class LockAccessory {
         : Characteristic.LockTargetState.UNSECURED;
       this.mechanism.getCharacteristic(Characteristic.LockTargetState).updateValue(this.target);
     }
+  }
+
+  private applyDoor(status: DoorStatus): void {
+    if (!this.contact || status === "unknown") {
+      return;
+    }
+
+    const { Characteristic } = this.platform;
+    this.door = status === "closed"
+      ? Characteristic.ContactSensorState.CONTACT_DETECTED
+      : Characteristic.ContactSensorState.CONTACT_NOT_DETECTED;
+    this.contact.getCharacteristic(Characteristic.ContactSensorState).updateValue(this.door);
   }
 
   private currentState(status: LockStatus): number | undefined {

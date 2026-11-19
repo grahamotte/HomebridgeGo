@@ -128,6 +128,10 @@ describe("status parsing", () => {
     const battery = statusFrame(0x0f, 0);
     battery.writeUInt16LE(6000, 8);
     assert.deepEqual(parseStatusFrame(battery), { kind: "battery", voltage: 6, percentage: 93 });
+    battery.writeUInt16LE(0, 8);
+    assert.equal(parseStatusFrame(battery), undefined);
+    battery.writeUInt16LE(2900, 8);
+    assert.equal(parseStatusFrame(battery), undefined);
 
     const failure = Buffer.alloc(18);
     failure[0] = 0xbb;
