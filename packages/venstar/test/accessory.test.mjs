@@ -47,7 +47,7 @@ describe("ThermostatAccessory", () => {
     await assert.rejects(handler(), running.api.hap.HapStatusError);
   });
 
-  it("logs an unreachable thermostat once and its recovery once", async () => {
+  it("reports an unreachable thermostat as not responding until it recovers, logging each once", async () => {
     const thermostats = new FakeThermostats();
     const { characteristic, messages } = await added({ thermostats });
     const handler = characteristic("Thermostat", "CurrentTemperature").getHandler;
@@ -61,12 +61,13 @@ describe("ThermostatAccessory", () => {
       await handler();
       await until(() => messages.warn.length === 1);
       Date.now = () => later + 10000;
-      await handler();
+      await assert.rejects(handler(), running.api.hap.HapStatusError);
       await until(() => messages.debug.some((message) => message.startsWith("Hallway: still unreachable")));
       thermostats.devices[HOST] = reading;
       Date.now = () => later + 20000;
-      await handler();
+      await assert.rejects(handler(), running.api.hap.HapStatusError);
       await until(() => messages.info.includes("Hallway: reachable again"));
+      assert.equal(typeof await handler(), "number");
     } finally {
       Date.now = realNow;
     }

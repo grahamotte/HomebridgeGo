@@ -94,6 +94,12 @@ export class FanAccessory {
         this.poll();
       }
 
+      // Once the latest poll has failed, say so instead of showing state that may no longer be true,
+      // such as a fan that lost power still looking on.
+      if (this.reachability.isDown) {
+        throw this.communicationFailure();
+      }
+
       return this.values;
     }
 
