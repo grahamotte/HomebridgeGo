@@ -54,7 +54,7 @@ describe("FanAccessory", () => {
     await assert.rejects(cached.getService("Fanv2").getCharacteristic({ name: "Active" }).getHandler(), running.api.hap.HapStatusError);
   });
 
-  it("logs an unreachable fan once and its recovery once", async (t) => {
+  it("reports an unreachable fan as not responding until it recovers, logging each once", async (t) => {
     const fans = new FakeFans();
     const { characteristic, messages } = await added({ fans });
     const device = fans.devices[HOST];
@@ -67,12 +67,13 @@ describe("FanAccessory", () => {
     await handler();
     await until(() => messages.warn.length === 1);
     now += 10000;
-    await handler();
+    await assert.rejects(handler(), running.api.hap.HapStatusError);
     await until(() => messages.debug.some((message) => message.startsWith("Center: still unreachable")));
     fans.devices[HOST] = device;
     now += 10000;
-    await handler();
+    await assert.rejects(handler(), running.api.hap.HapStatusError);
     await until(() => messages.info.includes("Center: reachable again"));
+    assert.equal(await handler(), 0);
 
     assert.deepEqual(messages.warn, ["Center: unreachable: Fan request failed: connect ECONNREFUSED"]);
   });
