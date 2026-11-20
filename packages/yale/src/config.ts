@@ -63,7 +63,7 @@ function readLock(entry: unknown): LockSettings | string {
   }
 
   const name = typeof record.name === "string" && record.name.trim() ? record.name.trim() : "Lock";
-  return { name, address, key, slot };
+  return { name, address, key, slot, doorSensor: record.doorSensor === true };
 }
 
 function readNumber(value: unknown, fallback: number, min: number, max: number): number {

@@ -24,6 +24,7 @@ import {
   WRITE_CHARACTERISTIC,
   writeSecurityChecksum,
   writeSimpleChecksum,
+  type DoorStatus,
   type FrameMatcher,
   type LockStatus,
   type StatusUpdate
@@ -35,11 +36,13 @@ export interface LockSettings {
   readonly address: string;
   readonly key: string;
   readonly slot: number;
+  readonly doorSensor?: boolean;
 }
 
 export interface LockSnapshot {
   readonly lock: LockStatus;
   readonly battery?: number;
+  readonly door?: DoorStatus;
 }
 
 const OPERATION_ATTEMPTS = 3;
@@ -126,7 +129,16 @@ class LockConnection {
   async battery(): Promise<number | undefined> {
     const frame = await this.execute(buildCommand(Command.GetStatus, StatusType.Battery), statusMatcher(StatusType.Battery));
     const update = parseStatusFrame(frame);
+    this.log.debug(`${this.settings.name}: battery reply ${frame.toString("hex")}${update?.kind === "battery" ? ` reads ${update.voltage}V, ${update.percentage}%` : " was not usable"}`);
     return update?.kind === "battery" ? update.percentage : undefined;
+  }
+
+  async door(): Promise<DoorStatus> {
+    const frame = await this.execute(buildCommand(Command.GetStatus, StatusType.DoorOnly), statusMatcher(StatusType.DoorOnly));
+    const update = parseStatusFrame(frame);
+    const status = update?.kind === "door" ? update.status : "unknown";
+    this.log.debug(`${this.settings.name}: door reply ${frame.toString("hex")} reads ${status}`);
+    return status;
   }
 
   async operate(opcode: number, progress: { acknowledged: boolean }): Promise<void> {
@@ -278,6 +290,10 @@ class LockConnection {
     }
 
     const update = parseStatusFrame(frame);
+    if (update?.kind === "door") {
+      this.log.debug(`${this.settings.name}: door pushed ${frame.toString("hex")} reads ${update.status}`);
+    }
+
     if (update) {
       this.onState(update);
     }
@@ -331,13 +347,22 @@ export class YaleLock {
   ) {}
 
   refresh(wanted: StillWanted = ALWAYS): Promise<LockSnapshot> {
-    return this.run(READ_ATTEMPTS, wanted, async (connection) => ({
-      lock: await connection.status(),
-      battery: await connection.battery().catch((error: unknown) => {
+    return this.run(READ_ATTEMPTS, wanted, async (connection) => {
+      const lock = await connection.status();
+      const battery = await connection.battery().catch((error: unknown) => {
         this.log.debug(`${this.settings.name}: battery read failed: ${describe(error)}`);
         return undefined;
-      })
-    }));
+      });
+      if (!this.settings.doorSensor) {
+        return { lock, battery };
+      }
+
+      const door = await connection.door().catch((error: unknown) => {
+        this.log.debug(`${this.settings.name}: door read failed: ${describe(error)}`);
+        return undefined;
+      });
+      return { lock, battery, door };
+    });
   }
 
   setLocked(locked: boolean, wanted: StillWanted = ALWAYS): Promise<void> {

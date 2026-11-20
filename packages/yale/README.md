@@ -8,6 +8,7 @@ or Wi-Fi module.
 
 - Locks and unlocks over Bluetooth Low Energy using the lock's offline key.
 - Exposes lock state, jams, and battery level to HomeKit.
+- Optionally exposes the lock's door open/closed sensor as a HomeKit contact sensor.
 - Retries dropped connections and disconnects when idle to save lock battery.
 
 ## Requirements
@@ -35,15 +36,21 @@ Locks cannot be discovered, because each needs its offline key. Add each one:
       "name": "Front Door",
       "address": "A4:C1:38:5E:2D:73",
       "key": "00112233445566778899aabbccddeeff",
-      "slot": 1
+      "slot": 1,
+      "doorSensor": true
     }
   ]
 }
 ```
 
+`doorSensor` is optional. Turn it on only for a lock with a door sensor that has been calibrated in the Yale or
+August app. A lock without one never answers the door query, so each refresh would wait for a timeout.
+
 ## Options
 
-- `locks`: each lock's `name`, Bluetooth `address`, offline `key`, and key `slot`.
+- `locks`: each lock's `name`, Bluetooth `address`, offline `key`, and key `slot`, plus optional `doorSensor`
+  (default `false`) to add a "<name> Door" contact sensor. It reads closed as contact detected, and ajar or
+  open as contact not detected.
 - `adapter`: optional Bluetooth adapter such as `hci1`. Default: the first adapter.
 - `pollIntervalSeconds`: background refresh interval. Use `0` to disable. Default: `900`.
 - `idleDisconnectSeconds`: how long to stay connected after a command. Default: `30`.
@@ -54,6 +61,8 @@ Locks cannot be discovered, because each needs its offline key. Add each one:
 
 - A lock that cannot be reached is logged once, with its recovery; retries are logged at debug level.
 - Lock and unlock requests, and their results, are always logged.
+- With debug logging on, every battery reply is logged as raw hex with the voltage and percentage it decodes to.
+  A reply that reads under 3 V cannot be a real battery reading, so it is ignored instead of shown as 0%.
 - Locks removed from `locks` are removed from HomeKit.
 
 ## Notes

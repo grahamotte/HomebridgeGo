@@ -12,7 +12,7 @@ function createLock(options = {}) {
   const updates = [];
   const lock = new YaleLock(
     new Bluez(() => bus),
-    { name: "Front Door", address: ADDRESS, key: options.key ?? KEY, slot: options.slot ?? SLOT },
+    { name: "Front Door", address: ADDRESS, key: options.key ?? KEY, slot: options.slot ?? SLOT, doorSensor: options.doorSensor },
     logger,
     (update) => updates.push(update),
     { ...FAST_TIMING, ...options.timing },
@@ -32,6 +32,42 @@ describe("YaleLock", () => {
     ]);
     await lock.stop();
     assert.deepEqual(fakeLock.commands.slice(-1), ["secure:5"]);
+  });
+
+  it("reads the door only when the door sensor is enabled", async () => {
+    const { fakeLock, lock, updates } = createLock({ doorSensor: true });
+    fakeLock.door = "ajar";
+
+    assert.deepEqual(await lock.refresh(), { lock: "locked", battery: 93, door: "ajar" });
+    assert.deepEqual(fakeLock.commands, ["secure:1", "secure:3", "2:2", "2:15", "2:46"]);
+    assert.deepEqual(updates.filter((update) => update.kind === "door"), [{ kind: "door", status: "ajar" }]);
+    await lock.stop();
+  });
+
+  it("reports a door code it does not know as unknown", async () => {
+    const { fakeLock, lock } = createLock({ doorSensor: true });
+    fakeLock.door = "none";
+
+    assert.deepEqual(await lock.refresh(), { lock: "locked", battery: 93, door: "unknown" });
+    await lock.stop();
+  });
+
+  it("logs the raw battery reply for diagnosis", async () => {
+    const { lock, messages } = createLock();
+
+    await lock.refresh();
+    assert.equal(messages.debug.filter((message) => /battery reply [0-9a-f]{36} reads 6V, 93%/u.test(message)).length, 1);
+    await lock.stop();
+  });
+
+  it("ignores a battery reply that cannot be a real reading", async () => {
+    const { fakeLock, lock, messages, updates } = createLock();
+    fakeLock.batteryMillivolts = 0;
+
+    assert.deepEqual(await lock.refresh(), { lock: "locked", battery: undefined });
+    assert.deepEqual(updates, [{ kind: "lock", status: "locked" }]);
+    assert.equal(messages.debug.filter((message) => message.includes("was not usable")).length, 1);
+    await lock.stop();
   });
 
   it("unlocks and locks over one session", async () => {

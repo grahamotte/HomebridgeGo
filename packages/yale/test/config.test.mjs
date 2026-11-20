@@ -13,12 +13,24 @@ describe("parseConfig", () => {
 
     assert.deepEqual(problems, []);
     assert.deepEqual(settings, {
-      locks: [{ name: "Front Door", address: "A4:C1:38:5E:2D:73", key: KEY.toLowerCase(), slot: 1 }],
+      locks: [{ name: "Front Door", address: "A4:C1:38:5E:2D:73", key: KEY.toLowerCase(), slot: 1, doorSensor: false }],
       adapter: undefined,
       pollIntervalMs: 900000,
       idleDisconnectMs: 30000,
       commandTimeoutMs: 180000
     });
+  });
+
+  it("enables the door sensor only when it is set to true", () => {
+    const { settings } = parseConfig({
+      platform: "GoYale",
+      locks: [
+        { address: "A4:C1:38:5E:2D:73", key: KEY, slot: 1, doorSensor: true },
+        { address: "A4:C1:38:5E:2D:74", key: KEY, slot: 1, doorSensor: "yes" }
+      ]
+    });
+
+    assert.deepEqual(settings.locks.map((lock) => lock.doorSensor), [true, false]);
   });
 
   it("reports invalid and duplicate locks without dropping valid ones", () => {

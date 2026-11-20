@@ -40,6 +40,12 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 255
+            },
+            "doorSensor": {
+              "title": "Door sensor",
+              "description": "Expose the lock's door open/closed sensor as a HomeKit contact sensor. Only for locks with a door sensor that has been calibrated in the Yale app.",
+              "type": "boolean",
+              "default": false
             }
           },
           "required": [
