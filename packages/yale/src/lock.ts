@@ -136,7 +136,9 @@ class LockConnection {
   async door(): Promise<DoorStatus> {
     const frame = await this.execute(buildCommand(Command.GetStatus, StatusType.DoorOnly), statusMatcher(StatusType.DoorOnly));
     const update = parseStatusFrame(frame);
-    return update?.kind === "door" ? update.status : "unknown";
+    const status = update?.kind === "door" ? update.status : "unknown";
+    this.log.debug(`${this.settings.name}: door reply ${frame.toString("hex")} reads ${status}`);
+    return status;
   }
 
   async operate(opcode: number, progress: { acknowledged: boolean }): Promise<void> {
@@ -288,6 +290,10 @@ class LockConnection {
     }
 
     const update = parseStatusFrame(frame);
+    if (update?.kind === "door") {
+      this.log.debug(`${this.settings.name}: door pushed ${frame.toString("hex")} reads ${update.status}`);
+    }
+
     if (update) {
       this.onState(update);
     }
